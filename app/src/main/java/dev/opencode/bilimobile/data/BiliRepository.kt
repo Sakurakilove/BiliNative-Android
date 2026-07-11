@@ -54,21 +54,48 @@ class BiliRepository(context: Context) {
         "https://api.bilibili.com/x/web-interface/view?bvid=$bvid"
     ).requireData()
 
-    suspend fun playUrl(bvid: String, cid: Long): String {
+    suspend fun related(bvid: String): List<Video> = get<ApiResponse<List<Video>>>(
+        "https://api.bilibili.com/x/web-interface/archive/related?bvid=$bvid"
+    ).requireData().filter { it.isPlayable }
+
+    suspend fun comments(aid: Long, page: Int): ReplyData = get<ApiResponse<ReplyData>>(
+        "https://api.bilibili.com/x/v2/reply".toHttpUrl().newBuilder()
+            .addQueryParameter("type", "1").addQueryParameter("oid", aid.toString())
+            .addQueryParameter("pn", page.toString()).addQueryParameter("ps", "20")
+            .addQueryParameter("sort", "2").build().toString()
+    ).requireData()
+
+    suspend fun history(): List<HistoryItem> = get<ApiResponse<HistoryData>>(
+        "https://api.bilibili.com/x/web-interface/history/cursor?ps=12"
+    ).requireData().list
+
+    suspend fun watchLater(): List<Video> = get<ApiResponse<WatchLaterData>>(
+        "https://api.bilibili.com/x/v2/history/toview?ps=12&pn=1"
+    ).requireData().list.filter { it.bvid.isNotBlank() }
+
+    suspend fun favoriteFolders(mid: Long): List<FavoriteFolder> = get<ApiResponse<FavoriteData>>(
+        "https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=$mid"
+    ).requireData().list
+
+    suspend fun playUrl(bvid: String, cid: Long, quality: Int = 64): PlayResult {
         fun requestUrl(platform: String?) = "https://api.bilibili.com/x/player/playurl".toHttpUrl().newBuilder()
             .addQueryParameter("bvid", bvid).addQueryParameter("cid", cid.toString())
-            .addQueryParameter("qn", "64").addQueryParameter("fnval", "0")
+            .addQueryParameter("qn", quality.toString()).addQueryParameter("fnval", "0")
             .apply { platform?.let { addQueryParameter("platform", it) } }
             .build().toString()
         fun PlayData.primaryUrl() = durl.firstOrNull()?.let { segment ->
             segment.url.ifBlank { segment.backup_url.firstOrNull().orEmpty() }
         }.orEmpty()
 
-        val primary = get<ApiResponse<PlayData>>(requestUrl("html5")).requireData().primaryUrl()
-        if (primary.isNotBlank()) return primary
+        val html5 = get<ApiResponse<PlayData>>(requestUrl("html5")).requireData()
+        val primary = html5.primaryUrl()
+        if (primary.isNotBlank()) return PlayResult(primary, html5.quality, html5.accept_quality)
         // Some videos reject the HTML5 hint but still expose a progressive default response.
-        return get<ApiResponse<PlayData>>(requestUrl(null)).requireData().primaryUrl()
-            .ifBlank { error("No progressive stream is available for this video") }
+        val fallback = get<ApiResponse<PlayData>>(requestUrl(null)).requireData()
+        return PlayResult(
+            fallback.primaryUrl().ifBlank { error("当前视频没有可用的渐进式播放地址") },
+            fallback.quality, fallback.accept_quality
+        )
     }
 
     suspend fun profile(): NavData {
@@ -107,14 +134,24 @@ class BiliRepository(context: Context) {
     private suspend inline fun <reified T> get(url: String): T = withContext(Dispatchers.IO) {
         val response = client.newCall(Request.Builder().url(url).get().build()).execute()
         response.use {
-            if (!it.isSuccessful) error("HTTP ${it.code}")
-            json.decodeFromString<T>(it.body?.string() ?: error("Empty response"))
+            if (!it.isSuccessful) error("网络请求失败（HTTP ${it.code}）")
+            json.decodeFromString<T>(it.body?.string() ?: error("服务器返回了空内容"))
         }
     }
 
     private fun <T> ApiResponse<T>.requireData(): T {
-        if (code != 0) error(message.ifBlank { "API error $code" })
-        return data ?: error("Response did not include data")
+        if (code != 0) error(apiError(code))
+        return data ?: error("服务器响应缺少数据")
+    }
+
+    private fun apiError(code: Int) = when (code) {
+        -101 -> "请先登录后再试"
+        -111 -> "登录状态已失效，请重新登录"
+        -400 -> "请求参数有误"
+        -403, -412 -> "请求被服务器限制，请稍后再试"
+        -404 -> "内容不存在或已失效"
+        62002, 62004 -> "视频不可见或正在审核"
+        else -> "服务器暂时无法处理请求（错误码 $code）"
     }
 
     private fun signWbi(params: Map<String, String>, wbi: WbiImage): Map<String, String> {
