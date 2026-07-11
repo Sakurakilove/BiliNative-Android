@@ -1,3 +1,5 @@
+@file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+
 package dev.opencode.bilimobile.ui
 
 import android.graphics.Bitmap
@@ -75,7 +77,6 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.MediaItem
-import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
@@ -235,7 +236,6 @@ private fun DetailScreen(bvid: String, vm: MainViewModel) {
     }
 }
 
-@OptIn(UnstableApi::class)
 @Composable
 private fun VideoPlayer(url: String, headers: Map<String, String>) {
     val context = LocalContext.current
