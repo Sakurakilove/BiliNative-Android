@@ -54,18 +54,18 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 
-private enum class Tab { Home, Dynamic, Profile }
+private enum class RootTab { Home, Dynamic, Profile }
 
 @Composable fun BiliApp(vm: MainViewModel = viewModel()) {
-    var tab by rememberSaveable { mutableStateOf(Tab.Home) }
+    var tab by rememberSaveable { mutableStateOf(RootTab.Home) }
     var detail by rememberSaveable { mutableStateOf<String?>(null) }
     var search by rememberSaveable { mutableStateOf(false) }
     BackHandler(detail != null || search) { if (detail != null) detail = null else search = false }
     Scaffold(bottomBar = {
         AnimatedVisibility(detail == null && !search, enter = fadeIn(), exit = fadeOut()) {
             NavigationBar(Modifier.height(72.dp), containerColor = MaterialTheme.colorScheme.surface.copy(alpha = .92f), tonalElevation = 2.dp) {
-                Tab.entries.forEach { item -> NavigationBarItem(tab == item, { tab = item }, {
-                    Icon(when (item) { Tab.Home -> Icons.Default.Home; Tab.Dynamic -> Icons.Default.Subscriptions; Tab.Profile -> Icons.Default.Person }, tabTitle(item))
+                RootTab.entries.forEach { item -> NavigationBarItem(tab == item, { tab = item }, {
+                    Icon(when (item) { RootTab.Home -> Icons.Default.Home; RootTab.Dynamic -> Icons.Default.Subscriptions; RootTab.Profile -> Icons.Default.Person }, tabTitle(item))
                 }, label = { Text(tabTitle(item)) }, alwaysShowLabel = true) }
             }
         }
@@ -74,8 +74,8 @@ private enum class Tab { Home, Dynamic, Profile }
             AnimatedContent(Pair(detail, search), label = "destination") { (id, searching) ->
                 when { id != null -> DetailScreen(id, vm) { detail = it }
                     searching -> SearchScreen(vm, { search = false }, { detail = it })
-                    tab == Tab.Home -> HomeScreen(vm, { search = true }, { detail = it })
-                    tab == Tab.Dynamic -> DynamicScreen(vm) { detail = it }
+                    tab == RootTab.Home -> HomeScreen(vm, { search = true }, { detail = it })
+                    tab == RootTab.Dynamic -> DynamicScreen(vm) { detail = it }
                     else -> ProfileScreen(vm) { detail = it }
                 }
             }
@@ -193,4 +193,4 @@ private fun normalize(value: String) = if (value.startsWith("//")) "https:$value
 private fun formatDuration(seconds: Int) = "%d:%02d".format(seconds / 60, seconds % 60)
 private fun formatCount(value: Long) = when { value >= 100_000_000 -> "%.1f亿".format(value / 100_000_000.0); value >= 10_000 -> "%.1f万".format(value / 10_000.0); else -> value.toString() }
 private fun formatDate(epoch: Long) = if (epoch <= 0) "" else SimpleDateFormat("MM-dd", Locale.CHINA).format(Date(epoch * 1000))
-@Composable private fun tabTitle(tab: Tab) = stringResource(when (tab) { Tab.Home -> dev.opencode.bilimobile.R.string.home; Tab.Dynamic -> dev.opencode.bilimobile.R.string.dynamic; Tab.Profile -> dev.opencode.bilimobile.R.string.profile })
+@Composable private fun tabTitle(tab: RootTab) = stringResource(when (tab) { RootTab.Home -> dev.opencode.bilimobile.R.string.home; RootTab.Dynamic -> dev.opencode.bilimobile.R.string.dynamic; RootTab.Profile -> dev.opencode.bilimobile.R.string.profile })
