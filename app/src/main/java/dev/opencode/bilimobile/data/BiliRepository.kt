@@ -6,6 +6,13 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -27,6 +34,42 @@ class BiliRepository(context: Context) {
     suspend fun popular(): List<Video> = get<ApiResponse<PopularData>>(
         "https://api.bilibili.com/x/web-interface/popular?ps=30&pn=1"
     ).requireData().list.filter { it.isPlayable }
+
+    suspend fun channel(channel: Channel): List<Video> {
+        if (channel.popular) return popular()
+        if (channel.tid == null) return get<ApiResponse<RecommendData>>(
+            "https://api.bilibili.com/x/web-interface/index/top/rcmd?fresh_type=3&ps=30"
+        ).requireData().item.filter { it.isPlayable }
+        return get<ApiResponse<List<Video>>>("https://api.bilibili.com/x/web-interface/ranking/v2?rid=${channel.tid}&type=all")
+            .requireData().filter { it.isPlayable }
+    }
+
+    suspend fun dynamics(): List<DynamicVideo> {
+        val root = get<JsonElement>("https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all")
+        val response = root.jsonObject
+        if (response["code"]?.jsonPrimitive?.intOrNull != 0) error(apiError(response["code"]?.jsonPrimitive?.intOrNull ?: -1))
+        return response["data"]?.jsonObject?.get("items")?.jsonArray.orEmpty().mapNotNull { element ->
+            runCatching {
+                val item = element.jsonObject
+                val archive = item["modules"]?.jsonObject?.get("module_dynamic")?.jsonObject
+                    ?.get("major")?.jsonObject?.get("archive")?.jsonObject ?: return@runCatching null
+                val bvid = archive["bvid"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                if (bvid.isBlank()) return@runCatching null
+                val stat = archive["stat"]?.jsonObject
+                val author = item["modules"]?.jsonObject?.get("module_author")?.jsonObject
+                DynamicVideo(
+                    item["id_str"]?.jsonPrimitive?.contentOrNull ?: bvid,
+                    Video(bvid = bvid, title = archive["title"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                        pic = archive["cover"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                        duration = archive["duration_text"]?.jsonPrimitive?.contentOrNull.orEmpty().parseDuration(),
+                        author = author?.get("name")?.jsonPrimitive?.contentOrNull.orEmpty(),
+                        play = stat?.get("play")?.jsonPrimitive?.contentOrNull.parseCount()),
+                    archive["desc"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    author?.get("pub_time")?.jsonPrimitive?.contentOrNull.orEmpty()
+                )
+            }.getOrNull()
+        }
+    }
 
     suspend fun search(query: String): List<Video> {
         val params = linkedMapOf(
@@ -65,6 +108,13 @@ class BiliRepository(context: Context) {
             .addQueryParameter("sort", "2").build().toString()
     ).requireData()
 
+    suspend fun commentReplies(aid: Long, root: Long, page: Int): ReplyData = get<ApiResponse<ReplyData>>(
+        "https://api.bilibili.com/x/v2/reply/reply".toHttpUrl().newBuilder()
+            .addQueryParameter("type", "1").addQueryParameter("oid", aid.toString())
+            .addQueryParameter("root", root.toString()).addQueryParameter("pn", page.toString())
+            .addQueryParameter("ps", "20").build().toString()
+    ).requireData()
+
     suspend fun history(): List<HistoryItem> = get<ApiResponse<HistoryData>>(
         "https://api.bilibili.com/x/web-interface/history/cursor?ps=12"
     ).requireData().list
@@ -78,24 +128,70 @@ class BiliRepository(context: Context) {
     ).requireData().list
 
     suspend fun playUrl(bvid: String, cid: Long, quality: Int = 64): PlayResult {
-        fun requestUrl(platform: String?) = "https://api.bilibili.com/x/player/playurl".toHttpUrl().newBuilder()
+        fun requestUrl(fnval: String, platform: String? = null) = "https://api.bilibili.com/x/player/playurl".toHttpUrl().newBuilder()
             .addQueryParameter("bvid", bvid).addQueryParameter("cid", cid.toString())
-            .addQueryParameter("qn", quality.toString()).addQueryParameter("fnval", "0")
+            .addQueryParameter("qn", quality.toString()).addQueryParameter("fnval", fnval)
             .apply { platform?.let { addQueryParameter("platform", it) } }
             .build().toString()
-        fun PlayData.primaryUrl() = durl.firstOrNull()?.let { segment ->
-            segment.url.ifBlank { segment.backup_url.firstOrNull().orEmpty() }
-        }.orEmpty()
+        fun PlayData.urls() = durl.mapNotNull { segment ->
+            segment.url.ifBlank { segment.backup_url.firstOrNull().orEmpty() }.takeIf(String::isNotBlank)
+        }
 
-        val html5 = get<ApiResponse<PlayData>>(requestUrl("html5")).requireData()
-        val primary = html5.primaryUrl()
-        if (primary.isNotBlank()) return PlayResult(primary, html5.quality, html5.accept_quality)
+        val dash = get<ApiResponse<PlayData>>(requestUrl("16")).requireData()
+        val video = dash.dash?.video?.filter { it.id <= quality && it.url.isNotBlank() }?.maxByOrNull { it.id }
+            ?: dash.dash?.video?.filter { it.url.isNotBlank() }?.minByOrNull { it.id }
+        val audio = dash.dash?.audio?.filter { it.url.isNotBlank() }?.maxByOrNull { it.bandwidth }
+        if (video != null) return PlayResult(listOf(video.url), audio?.url, video.id, dash.accept_quality, dash.accept_description)
+        val html5 = get<ApiResponse<PlayData>>(requestUrl("0", "html5")).requireData()
+        val urls = html5.urls()
+        if (urls.isNotEmpty()) return PlayResult(urls, null, html5.quality, html5.accept_quality, html5.accept_description)
         // Some videos reject the HTML5 hint but still expose a progressive default response.
-        val fallback = get<ApiResponse<PlayData>>(requestUrl(null)).requireData()
+        val fallback = get<ApiResponse<PlayData>>(requestUrl("0")).requireData()
         return PlayResult(
-            fallback.primaryUrl().ifBlank { error("当前视频没有可用的渐进式播放地址") },
-            fallback.quality, fallback.accept_quality
+            fallback.urls().ifEmpty { error("当前视频没有可用的播放地址") }, null,
+            fallback.quality, fallback.accept_quality, fallback.accept_description
         )
+    }
+
+    suspend fun interaction(aid: Long): InteractionState {
+        val liked = get<ApiResponse<Int>>("https://api.bilibili.com/x/web-interface/archive/has/like?aid=$aid").data == 1
+        val laterValue = get<ApiResponse<JsonElement>>("https://api.bilibili.com/x/v2/history/toview/has?aid=$aid").data
+        val later = laterValue?.jsonPrimitive?.contentOrNull in setOf("1", "true")
+        val fav = get<ApiResponse<JsonElement>>("https://api.bilibili.com/x/v3/fav/folder/created/list-all?rid=$aid&type=2").data
+            ?.jsonObject?.get("list")?.jsonArray?.any { it.jsonObject["fav_state"]?.jsonPrimitive?.contentOrNull == "1" } == true
+        return InteractionState(liked, later, fav)
+    }
+
+    suspend fun setLike(aid: Long, add: Boolean) = post("https://api.bilibili.com/x/web-interface/archive/like",
+        mapOf("aid" to aid.toString(), "like" to if (add) "1" else "2"))
+
+    suspend fun setWatchLater(aid: Long, add: Boolean) = post(
+        "https://api.bilibili.com/x/v2/history/toview/${if (add) "add" else "del"}", mapOf("aid" to aid.toString()))
+
+    suspend fun setFavorite(aid: Long, folderId: Long, add: Boolean) = post(
+        "https://api.bilibili.com/x/v3/fav/resource/deal", mapOf("rid" to aid.toString(), "type" to "2",
+            (if (add) "add_media_ids" else "del_media_ids") to folderId.toString()))
+
+    suspend fun danmaku(cid: Long): List<Danmaku> = withContext(Dispatchers.IO) {
+        val response = client.newCall(Request.Builder().url("https://comment.bilibili.com/$cid.xml").build()).execute()
+        response.use {
+            if (!it.isSuccessful) error("弹幕加载失败（HTTP ${it.code}）")
+            val parser = android.util.Xml.newPullParser().apply { setInput(it.body?.byteStream(), "UTF-8") }
+            buildList {
+                while (parser.eventType != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
+                    if (parser.eventType == org.xmlpull.v1.XmlPullParser.START_TAG && parser.name == "d") {
+                        val values = parser.getAttributeValue(null, "p").orEmpty().split(',')
+                        val text = parser.nextText().trim()
+                        val time = values.getOrNull(0)?.toFloatOrNull()
+                        val mode = values.getOrNull(1)?.toIntOrNull()
+                        val color = values.getOrNull(3)?.toLongOrNull()
+                        if (time != null && time >= 0 && mode != null && mode in 1..5 &&
+                            color != null && color in 0L..0xffffffL && text.isNotBlank()
+                        ) add(Danmaku(time, mode, color, text.take(100)))
+                    } else parser.next()
+                }
+            }.sortedBy(Danmaku::time)
+        }
     }
 
     suspend fun profile(): NavData {
@@ -139,6 +235,19 @@ class BiliRepository(context: Context) {
         }
     }
 
+    private suspend fun post(url: String, values: Map<String, String>) = withContext(Dispatchers.IO) {
+        val csrf = cookieJar.value("bili_jct") ?: error("请先登录后再试")
+        val body = FormBody.Builder().apply { (values + ("csrf" to csrf)).forEach { (k, v) -> add(k, v) } }.build()
+        val request = Request.Builder().url(url).header("Origin", "https://www.bilibili.com")
+            .header("Referer", "https://www.bilibili.com/").post(body).build()
+        client.newCall(request).execute().use {
+            if (!it.isSuccessful) error("操作失败（HTTP ${it.code}）")
+            json.decodeFromString<ApiResponse<JsonElement>>(it.body?.string().orEmpty()).requireDataOrUnit()
+        }
+    }
+
+    private fun ApiResponse<JsonElement>.requireDataOrUnit() { if (code != 0) error(apiError(code)) }
+
     private fun <T> ApiResponse<T>.requireData(): T {
         if (code != 0) error(apiError(code))
         return data ?: error("服务器响应缺少数据")
@@ -174,4 +283,15 @@ class BiliRepository(context: Context) {
 
     private fun encode(value: String): String = java.net.URLEncoder.encode(value, Charsets.UTF_8.name())
         .replace("+", "%20").replace("%7E", "~")
+}
+
+private fun String.parseDuration(): Int = split(':').fold(0) { total, part -> total * 60 + (part.toIntOrNull() ?: 0) }
+private fun String?.parseCount(): Long {
+    val value = this?.trim().orEmpty()
+    val multiplier = when {
+        value.endsWith("亿") -> 100_000_000.0
+        value.endsWith("万") -> 10_000.0
+        else -> 1.0
+    }
+    return ((value.dropLast(if (multiplier == 1.0) 0 else 1).toDoubleOrNull() ?: 0.0) * multiplier).toLong()
 }

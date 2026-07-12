@@ -11,6 +11,10 @@ import dev.opencode.bilimobile.data.HistoryItem
 import dev.opencode.bilimobile.data.NavData
 import dev.opencode.bilimobile.data.PlayResult
 import dev.opencode.bilimobile.data.Video
+import dev.opencode.bilimobile.data.Channel
+import dev.opencode.bilimobile.data.Danmaku
+import dev.opencode.bilimobile.data.DynamicVideo
+import dev.opencode.bilimobile.data.InteractionState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -28,6 +32,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = BiliRepository(application)
     private val _popular = MutableStateFlow(ContentState<List<Video>>(loading = true))
     val popular = _popular.asStateFlow()
+    val channels = listOf(Channel("推荐"), Channel("热门", popular = true), Channel("动画", 1), Channel("游戏", 4), Channel("知识", 36), Channel("科技", 188), Channel("生活", 160))
+    private val _channel = MutableStateFlow(channels.first())
+    val channel = _channel.asStateFlow()
     private val _search = MutableStateFlow(ContentState<List<Video>>(value = emptyList()))
     val search = _search.asStateFlow()
     private val _details = MutableStateFlow(ContentState<Video>())
@@ -46,31 +53,71 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val watchLater = _watchLater.asStateFlow()
     private val _favorites = MutableStateFlow(ContentState<List<FavoriteFolder>>())
     val favorites = _favorites.asStateFlow()
+    private val _dynamics = MutableStateFlow(ContentState<List<DynamicVideo>>())
+    val dynamics = _dynamics.asStateFlow()
+    private val _interaction = MutableStateFlow(ContentState<InteractionState>())
+    val interaction = _interaction.asStateFlow()
+    private val _replies = MutableStateFlow<Map<Long, ContentState<List<Comment>>>>(emptyMap())
+    val replies = _replies.asStateFlow()
+    private val _danmaku = MutableStateFlow(ContentState<List<Danmaku>>())
+    val danmaku = _danmaku.asStateFlow()
     private val _login = MutableStateFlow<LoginState>(LoginState.Idle)
     val login = _login.asStateFlow()
     private var loginJob: Job? = null
+    private var profileJob: Job? = null
     private var searchJob: Job? = null
     private var detailsJob: Job? = null
     private var playJob: Job? = null
+    private var channelJob: Job? = null
+    private var dynamicsJob: Job? = null
+    private var relatedJob: Job? = null
+    private var commentsJob: Job? = null
+    private var danmakuJob: Job? = null
+    private var interactionJob: Job? = null
+    private val replyJobs = mutableMapOf<Long, Job>()
+    private val accountJobs = mutableListOf<Job>()
     private var searchRequest = 0
     private var detailsRequest = 0
     private var playRequest = 0
     private var commentPage = 1
     private var currentAid = 0L
+    private var currentBvid = ""
+    private var currentCid = 0L
 
     init {
         refreshPopular()
         refreshProfile()
     }
 
-    fun refreshPopular() = viewModelScope.launch {
+    fun refreshPopular() {
+        channelJob?.cancel()
+        val selected = _channel.value
+        channelJob = viewModelScope.launch {
         _popular.value = ContentState(value = _popular.value.value, loading = true)
         try {
-            _popular.value = ContentState(value = repository.popular())
+            val result = repository.channel(selected)
+            if (_channel.value == selected) _popular.value = ContentState(value = result)
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
-            _popular.value = ContentState(error = error.userMessage())
+            if (_channel.value == selected) _popular.value = ContentState(error = error.userMessage())
+        }
+        }
+    }
+
+    fun selectChannel(value: Channel) {
+        if (_channel.value == value) return
+        _channel.value = value
+        refreshPopular()
+    }
+
+    fun loadDynamics() {
+        dynamicsJob?.cancel()
+        dynamicsJob = viewModelScope.launch {
+        _dynamics.value = ContentState(value = _dynamics.value.value, loading = true)
+        try { _dynamics.value = ContentState(repository.dynamics()) }
+        catch (error: CancellationException) { throw error }
+        catch (error: Throwable) { _dynamics.value = ContentState(error = error.userMessage()) }
         }
     }
 
@@ -94,6 +141,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun loadDetails(bvid: String) {
         detailsJob?.cancel()
         playJob?.cancel()
+        cancelDetailJobs()
         val request = ++detailsRequest
         playRequest++
         detailsJob = viewModelScope.launch {
@@ -101,15 +149,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _playUrl.value = ContentState()
             _comments.value = ContentState(value = emptyList(), loading = true)
             _related.value = ContentState(value = emptyList(), loading = true)
+            _interaction.value = ContentState()
+            _replies.value = emptyMap()
+            _danmaku.value = ContentState()
             try {
                 val video = repository.details(bvid)
                 if (request != detailsRequest) return@launch
                 _details.value = ContentState(value = video)
-                loadStream(video.bvid, video.cid.takeIf { it > 0 } ?: video.pages.firstOrNull()?.cid ?: 0)
+                currentBvid = video.bvid
                 currentAid = video.aid
+                val cid = video.cid.takeIf { it > 0 } ?: video.pages.firstOrNull()?.cid ?: 0
+                loadStream(video.bvid, cid)
+                loadDanmaku(cid)
                 commentPage = 1
                 loadComments(reset = true)
                 loadRelated(video.bvid)
+                if (_profile.value.value?.isLogin == true) loadInteraction(video.aid)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -118,9 +173,70 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun loadDanmaku(cid: Long) {
+        danmakuJob?.cancel()
+        val request = detailsRequest
+        danmakuJob = viewModelScope.launch {
+        if (cid <= 0) return@launch
+        _danmaku.value = ContentState(loading = true)
+        try { val result = repository.danmaku(cid); if (request == detailsRequest && cid == currentCid) _danmaku.value = ContentState(result) }
+        catch (error: CancellationException) { throw error }
+        catch (error: Throwable) { if (request == detailsRequest && cid == currentCid) _danmaku.value = ContentState(error = error.userMessage()) }
+        }
+    }
+
+    fun loadReplies(root: Long, page: Int = 1) {
+        replyJobs[root]?.cancel()
+        val aid = currentAid
+        val request = detailsRequest
+        replyJobs[root] = viewModelScope.launch {
+        _replies.value = _replies.value + (root to ContentState(value = _replies.value[root]?.value, loading = true))
+        try {
+            val loaded = repository.commentReplies(aid, root, page).replies.orEmpty()
+            if (request != detailsRequest || aid != currentAid) return@launch
+            val old = if (page == 1) emptyList() else _replies.value[root]?.value.orEmpty()
+            _replies.value = _replies.value + (root to ContentState(old + loaded))
+        } catch (error: CancellationException) { throw error }
+        catch (error: Throwable) { if (request == detailsRequest && aid == currentAid) _replies.value = _replies.value + (root to ContentState(error = error.userMessage())) }
+        }
+    }
+
+    private fun loadInteraction(aid: Long) {
+        interactionJob?.cancel()
+        val request = detailsRequest
+        interactionJob = viewModelScope.launch {
+        _interaction.value = ContentState(loading = true)
+        try { val result = repository.interaction(aid); if (request == detailsRequest && aid == currentAid) _interaction.value = ContentState(result) }
+        catch (error: Throwable) { if (request == detailsRequest && aid == currentAid) _interaction.value = ContentState(error = error.userMessage()) }
+        }
+    }
+
+    fun toggleLike(aid: Long) = updateInteraction { state -> repository.setLike(aid, !state.liked); state.copy(liked = !state.liked) }
+    fun toggleWatchLater(aid: Long) = updateInteraction { state -> repository.setWatchLater(aid, !state.watchLater); state.copy(watchLater = !state.watchLater) }
+    fun toggleFavorite(aid: Long) = updateInteraction { state ->
+        val folder = _favorites.value.value.orEmpty().firstOrNull { it.title == "默认收藏夹" }
+            ?: error("未找到默认收藏夹，请先在官方客户端创建或命名默认收藏夹")
+        repository.setFavorite(aid, folder.id, !state.favorite); state.copy(favorite = !state.favorite)
+    }
+
+    private fun updateInteraction(action: suspend (InteractionState) -> InteractionState) {
+        if (interactionJob?.isActive == true) return
+        val aid = currentAid
+        val request = detailsRequest
+        interactionJob = viewModelScope.launch {
+        val old = _interaction.value.value ?: run { _interaction.value = ContentState(error = "请先登录后再试"); return@launch }
+        _interaction.value = ContentState(old, loading = true)
+        try { val result = action(old); if (request == detailsRequest && aid == currentAid) _interaction.value = ContentState(result) }
+        catch (error: Throwable) { if (request == detailsRequest && aid == currentAid) _interaction.value = ContentState(old, error = error.userMessage()) }
+        }
+    }
+
     fun loadStream(bvid: String, cid: Long, quality: Int = 64) {
+        if (bvid != currentBvid) return
         playJob?.cancel()
         val request = ++playRequest
+        val detailRequest = detailsRequest
+        currentCid = cid
         playJob = viewModelScope.launch {
             if (cid == 0L) {
                 _playUrl.value = ContentState(error = "当前分集无法播放")
@@ -129,44 +245,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _playUrl.value = ContentState(loading = true)
             try {
                 val url = repository.playUrl(bvid, cid, quality)
-                if (request == playRequest) _playUrl.value = ContentState(value = url)
+                if (request == playRequest && detailRequest == detailsRequest && bvid == currentBvid && cid == currentCid) _playUrl.value = ContentState(value = url)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                if (request == playRequest) _playUrl.value = ContentState(error = error.userMessage())
+                if (request == playRequest && detailRequest == detailsRequest && bvid == currentBvid && cid == currentCid) _playUrl.value = ContentState(error = error.userMessage())
             }
         }
     }
 
-    private fun loadRelated(bvid: String) = viewModelScope.launch {
-        try { _related.value = ContentState(value = repository.related(bvid)) }
+    private fun loadRelated(bvid: String) {
+        relatedJob?.cancel()
+        val request = detailsRequest
+        relatedJob = viewModelScope.launch {
+        try { val result = repository.related(bvid); if (request == detailsRequest) _related.value = ContentState(value = result) }
         catch (error: CancellationException) { throw error }
-        catch (error: Throwable) { _related.value = ContentState(error = error.userMessage()) }
+        catch (error: Throwable) { if (request == detailsRequest) _related.value = ContentState(error = error.userMessage()) }
+        }
     }
 
-    fun loadComments(reset: Boolean = false) = viewModelScope.launch {
+    fun loadComments(reset: Boolean = false) {
+        if (commentsJob?.isActive == true && !reset) return
+        if (reset) commentsJob?.cancel()
+        val aid = currentAid
+        val request = detailsRequest
+        commentsJob = viewModelScope.launch {
         if (currentAid == 0L || (_comments.value.loading && !reset)) return@launch
         val page = if (reset) 1 else commentPage + 1
         _comments.value = _comments.value.copy(loading = true, error = null)
         try {
-            val result = repository.comments(currentAid, page).replies.orEmpty()
+            val result = repository.comments(aid, page).replies.orEmpty()
+            if (request != detailsRequest || aid != currentAid) return@launch
             val existing = if (reset) emptyList() else _comments.value.value.orEmpty()
             _comments.value = ContentState(value = existing + result)
             commentPage = page
         } catch (error: CancellationException) { throw error }
-        catch (error: Throwable) { _comments.value = _comments.value.copy(loading = false, error = error.userMessage()) }
+        catch (error: Throwable) { if (request == detailsRequest && aid == currentAid) _comments.value = _comments.value.copy(loading = false, error = error.userMessage()) }
+        }
     }
 
-    fun refreshProfile() = viewModelScope.launch {
+    fun refreshProfile() {
+        profileJob?.cancel()
+        profileJob = viewModelScope.launch {
         _profile.value = ContentState(value = _profile.value.value, loading = true)
         try {
             val profile = repository.profile()
             _profile.value = ContentState(value = profile)
             if (profile.isLogin) loadProfileSections(profile.mid)
+            if (profile.isLogin) loadDynamics()
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
             _profile.value = ContentState(error = error.userMessage())
+        }
         }
     }
 
@@ -177,9 +308,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             catch (error: CancellationException) { throw error }
             catch (error: Throwable) { target.value = ContentState(error = error.userMessage()) }
         }
-        load(_history) { repository.history() }
-        load(_watchLater) { repository.watchLater() }
-        load(_favorites) { repository.favoriteFolders(mid) }
+        accountJobs += load(_history) { repository.history() }
+        accountJobs += load(_watchLater) { repository.watchLater() }
+        accountJobs += load(_favorites) { repository.favoriteFolders(mid) }
     }
 
     fun beginLogin() {
@@ -230,15 +361,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun logout() {
+        cancelDetailJobs()
+        accountJobs.forEach { it.cancel() }; accountJobs.clear()
+        detailsJob?.cancel(); playJob?.cancel(); dynamicsJob?.cancel(); interactionJob?.cancel(); profileJob?.cancel()
+        detailsRequest++; playRequest++
         repository.logout()
         _history.value = ContentState()
         _watchLater.value = ContentState()
         _favorites.value = ContentState()
+        _dynamics.value = ContentState()
+        _interaction.value = ContentState()
+        _replies.value = emptyMap()
+        _danmaku.value = ContentState()
+        _profile.value = ContentState(loading = true)
+        currentAid = 0; currentBvid = ""; currentCid = 0
         dismissLogin()
         refreshProfile()
     }
 
     fun playbackHeaders() = repository.playbackHeaders()
+
+    private fun cancelDetailJobs() {
+        relatedJob?.cancel(); commentsJob?.cancel(); danmakuJob?.cancel(); interactionJob?.cancel()
+        replyJobs.values.forEach { it.cancel() }; replyJobs.clear()
+    }
 
     private fun Throwable.userMessage(): String {
         val raw = message.orEmpty()

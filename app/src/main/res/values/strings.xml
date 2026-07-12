@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">哔哩轻阅</string>
-    <string name="home">首页</string><string name="search">搜索</string><string name="profile">我的</string>
+    <string name="home">首页</string><string name="search">搜索</string><string name="profile">我的</string><string name="dynamic">动态</string>
     <string name="popular_title">正在流行</string><string name="popular_subtitle">发现大家此刻关注的内容</string>
     <string name="discover">发现</string><string name="search_hint">搜索视频</string><string name="search_empty">输入标题、UP 主或话题开始搜索</string>
     <string name="retry">重试</string><string name="empty">这里暂时没有内容</string><string name="loading">正在加载</string>
@@ -12,4 +12,7 @@
     <string name="qr_sign_in">扫码登录</string><string name="qr_scan">打开哔哩哔哩扫描二维码</string><string name="qr_confirm">已扫码，请在手机上确认</string><string name="login_success">登录成功</string><string name="cancel">取消</string><string name="continue_text">继续</string>
     <string name="history">观看历史</string><string name="watch_later">稍后再看</string><string name="favorites">收藏夹</string>
     <string name="player_unavailable">播放器暂不可用</string><string name="quality">清晰度</string><string name="speed">倍速</string>
+    <string name="api_disclaimer">非官方客户端。内容来自公开 Web API，接口可能随时变更。</string>
+    <string name="danmaku">弹幕</string><string name="fullscreen">切换全屏</string><string name="settings_about">设置与关于</string>
+    <string name="danmaku_short">弹</string><string name="danmaku_opacity">弹幕透明度 %1$d%%</string><string name="enter_fullscreen">进入全屏</string>
 </resources>

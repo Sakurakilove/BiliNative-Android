@@ -1,27 +1,27 @@
-# Bili Mobile Android Phase 2
+# Bili Mobile Android Phase 3
 
 Native Android client built with Kotlin, Jetpack Compose Material 3, OkHttp, Media3, Coil, and ZXing.
 
 ## Run
 
-1. Open this directory in Android Studio (JDK 17).
-2. Let Android Studio sync the project and install Android SDK 35 if prompted.
+1. Open this directory in Android Studio with JDK 17.
+2. Install Android SDK 35 when prompted.
 3. Run the `app` configuration on an API 26+ device or emulator.
 
-Android Studio 可直接同步并运行工程。GitHub Actions 使用固定的 Gradle 8.9 执行 `lintDebug assembleDebug`，成功后可在 workflow artifacts 下载 Debug APK。
+GitHub Actions uses Gradle 8.9 to run `lintDebug assembleDebug` and publishes the debug APK as an artifact.
 
-## Behavior and caveats
+## Phase 3 behavior
 
-- 默认界面为简体中文，支持自适应双列首页、深色模式、圆角卡片和边到边布局。
-- 详情页包含分集播放、完整统计与简介、UP 主信息、主评论分页和相关推荐。
-- 登录后独立加载观看历史、稍后再看和收藏夹预览；任一接口失败不会影响其他分区。
-- Coil 使用独立且不携带登录 Cookie 的图片客户端、内存/磁盘缓存、尺寸约束和淡入效果。
-- 播放器支持原生 Media3 控件、0.75x 至 2x 倍速，以及按账号权限重新请求 360P/480P/720P 渐进式地址。
+- Compact edge-to-edge home with real popular/region ranking channels, dense image-first cards, dynamic colors, and three state-retaining tabs.
+- Search is an integrated top-level destination. Logged-in dynamic video posts use the heterogeneous Polymer feed endpoint and safely ignore unsupported card types.
+- Detail includes fragmented MP4 video/audio merging, multi-segment progressive fallback, quality and speed controls, full-window landscape playback, saved position per video/page, timed XML danmaku, related videos, and independently loaded comment replies.
+- Like/unlike, watch-later add/remove, and favorite add/remove are explicit user actions. Favorites are only changed when a folder named `默认收藏夹` is available. These actions require an authenticated encrypted cookie jar and submit `bili_jct` as CSRF with Origin/Referer headers. Coin spending and comment/danmaku posting are not implemented.
+- Profile shows encrypted QR login, identity, visible history, favorite-folder summaries, watch later, version/cache information, disclaimer, and local sign-out.
+- Search signs requests from runtime WBI navigation keys. No app credentials, official keys, secrets, trademarks, or bundled copyrighted assets are included.
 
-- Search obtains public runtime WBI image keys from the navigation endpoint and signs each request locally. No app credentials or secrets are embedded.
-- QR login uses Bilibili's web QR flow. Response cookies are encrypted at rest and sent only when their OkHttp domain/path rules match. Signing out clears them locally.
-- Playback requests the progressive HTML5 `durl` format. Some videos require authentication, are region restricted, or only expose DASH/DRM streams and therefore cannot play. Fullscreen orientation locking and DASH quality switching are not implemented yet.
-- 评论为只读主评论；回复展开、互动写操作、历史/收藏的完整列表页和服务端退出尚未实现。退出始终会清除本地加密 Cookie。
-- The app depends on undocumented public Bilibili web APIs. Endpoint schemas and anti-bot requirements may change without notice.
-- Cleartext traffic is disabled. All configured API, image, QR, and media entry-point URLs use HTTPS.
-- This is an unofficial client and is not affiliated with Bilibili.
+## Caveats
+
+- This is an unofficial client and is not affiliated with Bilibili. It depends on undocumented public web APIs whose schemas and anti-bot requirements can change.
+- Playback availability and quality depend on account rights, region, and the server response. DRM streams are unsupported.
+- Picture-in-picture, uploader space browsing, gesture brightness/volume, cache clearing, and write operations for comments/danmaku are intentionally deferred rather than represented by nonfunctional UI.
+- Cleartext traffic is disabled. Session cookies are encrypted at rest and removed on sign-out.

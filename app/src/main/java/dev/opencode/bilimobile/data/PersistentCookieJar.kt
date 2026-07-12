@@ -57,6 +57,12 @@ class PersistentCookieJar(context: Context) : CookieJar {
     }
 
     @Synchronized
+    fun value(name: String): String? {
+        removeExpired()
+        return cookies.values.firstOrNull { it.name == name }?.value
+    }
+
+    @Synchronized
     private fun removeExpired() {
         val now = System.currentTimeMillis()
         cookies.filterValues { it.expiresAt <= now }.keys.forEach {

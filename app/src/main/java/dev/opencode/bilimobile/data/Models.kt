@@ -8,6 +8,7 @@ data class ApiResponse<T>(val code: Int = -1, val message: String = "", val data
 
 @Serializable
 data class PopularData(val list: List<Video> = emptyList())
+@Serializable data class RecommendData(val item: List<Video> = emptyList())
 
 @Serializable
 data class SearchData(val result: List<SearchVideo> = emptyList())
@@ -74,10 +75,21 @@ data class Video(
 @Serializable data class Page(val cid: Long = 0, val page: Int = 1, val part: String = "", val duration: Int = 0)
 
 @Serializable
-data class PlayData(val quality: Int = 0, val accept_quality: List<Int> = emptyList(), val durl: List<PlayUrl> = emptyList())
+data class PlayData(
+    val quality: Int = 0, val accept_quality: List<Int> = emptyList(),
+    val accept_description: List<String> = emptyList(), val durl: List<PlayUrl> = emptyList(),
+    val dash: DashData? = null
+)
 
 @Serializable
 data class PlayUrl(val url: String = "", val backup_url: List<String> = emptyList())
+
+@Serializable data class DashData(val video: List<DashStream> = emptyList(), val audio: List<DashStream> = emptyList())
+@Serializable data class DashStream(
+    val id: Int = 0, @SerialName("baseUrl") val baseUrl: String = "",
+    @SerialName("base_url") val baseUrlLegacy: String = "", val bandwidth: Long = 0,
+    @SerialName("mimeType") val mimeType: String = "", val codecs: String = ""
+) { val url: String get() = baseUrl.ifBlank { baseUrlLegacy } }
 
 @Serializable
 data class NavData(
@@ -126,4 +138,12 @@ sealed interface LoginState {
 @Serializable data class FavoriteData(val list: List<FavoriteFolder> = emptyList(), val count: Int = 0)
 @Serializable data class FavoriteFolder(val id: Long = 0, val title: String = "", val media_count: Int = 0)
 
-data class PlayResult(val url: String, val quality: Int, val availableQualities: List<Int>)
+data class PlayResult(
+    val videoUrls: List<String>, val audioUrl: String? = null, val quality: Int,
+    val availableQualities: List<Int>, val qualityLabels: List<String> = emptyList()
+) { val videoUrl: String get() = videoUrls.first() }
+
+data class Channel(val title: String, val tid: Int? = null, val popular: Boolean = false)
+data class DynamicVideo(val id: String, val video: Video, val text: String = "", val time: String = "")
+data class InteractionState(val liked: Boolean = false, val watchLater: Boolean = false, val favorite: Boolean = false)
+data class Danmaku(val time: Float, val mode: Int, val color: Long, val text: String)
