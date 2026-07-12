@@ -6,6 +6,7 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -16,6 +17,10 @@ import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.IOException
+
+class AmbiguousWriteException(message: String, cause: Throwable) : IOException(message, cause)
+class ApiBusinessException(val code: Int, message: String) : IllegalStateException(message)
 
 class BiliRepository(context: Context) {
     private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
@@ -117,7 +122,7 @@ class BiliRepository(context: Context) {
     ).requireData()
 
     suspend fun history(): List<HistoryItem> = get<ApiResponse<HistoryData>>(
-        "https://api.bilibili.com/x/web-interface/history/cursor?ps=12"
+        "https://api.bilibili.com/x/web-interface/history/cursor?ps=20"
     ).requireData().list
 
     suspend fun watchLater(): List<Video> = get<ApiResponse<WatchLaterData>>(
@@ -129,6 +134,12 @@ class BiliRepository(context: Context) {
     suspend fun favoriteFolders(mid: Long): List<FavoriteFolder> = get<ApiResponse<FavoriteData>>(
         "https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=$mid"
     ).requireData().list
+
+    suspend fun favoriteResources(mediaId: Long, page: Int): FavoriteResourceData = get<ApiResponse<FavoriteResourceData>>(
+        "https://api.bilibili.com/x/v3/fav/resource/list".toHttpUrl().newBuilder()
+            .addQueryParameter("media_id", mediaId.toString()).addQueryParameter("pn", page.toString())
+            .addQueryParameter("ps", "20").build().toString()
+    ).requireData()
 
     suspend fun playUrl(bvid: String, cid: Long, quality: Int = 64, forceDash: Boolean = false): PlayResult {
         fun requestUrl(fnval: String, platform: String? = null) = "https://api.bilibili.com/x/player/playurl".toHttpUrl().newBuilder()
@@ -169,7 +180,8 @@ class BiliRepository(context: Context) {
             get<ApiResponse<FavoriteData>>("https://api.bilibili.com/x/v3/fav/folder/created/list-all?rid=$aid&type=2")
                 .requireData().list.filter(FavoriteFolder::isFavorite).map(FavoriteFolder::id).toSet()
         }.getOrNull()
-        return InteractionState(liked, later, folders)
+        val coins = runCatching { get<ApiResponse<CoinData>>("https://api.bilibili.com/x/web-interface/archive/coins?aid=$aid").requireData().multiply }.getOrNull()
+        return InteractionState(liked, later, folders, coins)
     }
 
     suspend fun setLike(aid: Long, add: Boolean) = post("https://api.bilibili.com/x/web-interface/archive/like",
@@ -182,12 +194,33 @@ class BiliRepository(context: Context) {
         "https://api.bilibili.com/x/v3/fav/resource/deal", mapOf("rid" to aid.toString(), "type" to "2",
             (if (add) "add_media_ids" else "del_media_ids") to folderId.toString()))
 
-    suspend fun danmaku(cid: Long): List<Danmaku> = withContext(Dispatchers.IO) {
-        val response = client.newCall(Request.Builder().url("https://comment.bilibili.com/$cid.xml").build()).execute()
+    suspend fun postComment(aid: Long, message: String) = post("https://api.bilibili.com/x/v2/reply/add",
+        mapOf("type" to "1", "oid" to aid.toString(), "message" to message, "plat" to "1"))
+
+    suspend fun addCoin(aid: Long, multiply: Int, selectLike: Boolean) = post("https://api.bilibili.com/x/web-interface/coin/add",
+        mapOf("aid" to aid.toString(), "multiply" to multiply.toString(), "select_like" to if (selectLike) "1" else "0"))
+
+    suspend fun postDanmaku(cid: Long, bvid: String, aid: Long, message: String, progress: Long) = post(
+        "https://api.bilibili.com/x/v2/dm/post", mapOf("type" to "1", "oid" to cid.toString(),
+            "bvid" to bvid, "aid" to aid.toString(), "msg" to message, "progress" to progress.toString(),
+            "mode" to "1", "fontsize" to "25", "color" to "16777215", "pool" to "0",
+            "rnd" to (System.currentTimeMillis() / 1000).toString()))
+
+    suspend fun danmaku(cid: Long): DanmakuResult = withContext(Dispatchers.IO) {
+        val primary = "https://comment.bilibili.com/$cid.xml"
+        val fallback = "https://api.bilibili.com/x/v1/dm/list.so?oid=$cid"
+        runCatching { parseDanmaku(primary).also { if (it.isEmpty()) error("主弹幕源为空") } }.fold(
+            onSuccess = { DanmakuResult(it, false, primary) },
+            onFailure = { DanmakuResult(parseDanmaku(fallback), true, fallback) }
+        )
+    }
+
+    private fun parseDanmaku(url: String): List<Danmaku> {
+        val response = client.newCall(Request.Builder().url(url).build()).execute()
         response.use {
             if (!it.isSuccessful) error("弹幕加载失败（HTTP ${it.code}）")
             val parser = android.util.Xml.newPullParser().apply { setInput(it.body?.byteStream(), "UTF-8") }
-            buildList {
+            return buildList {
                 while (parser.eventType != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
                     if (parser.eventType == org.xmlpull.v1.XmlPullParser.START_TAG && parser.name == "d") {
                         val values = parser.getAttributeValue(null, "p").orEmpty().split(',')
@@ -222,7 +255,41 @@ class BiliRepository(context: Context) {
         }
     }
 
-    fun logout() = cookieJar.clear()
+    suspend fun logout() {
+        val target = "https://passport.bilibili.com/login/exit/v2".toHttpUrl()
+        try {
+            val csrf = cookieJar.valueFor(target, "bili_jct")
+            if (csrf != null) {
+                val response = postRaw<ApiResponse<JsonElement>>(target.toString(), mapOf("biliCSRF" to csrf))
+                if (response.code != 0) throw ApiBusinessException(response.code, apiError(response.code))
+            }
+        } finally { cookieJar.clear() }
+    }
+
+    suspend fun captcha(): CaptchaParameters {
+        val data = get<ApiResponse<CaptchaData>>("https://passport.bilibili.com/x/passport-login/captcha?source=main_web").requireData()
+        val gt = data.geetest?.gt
+        val challenge = data.geetest?.challenge
+        if (data.token.isNullOrBlank() || gt.isNullOrBlank() || challenge.isNullOrBlank() ||
+            (data.type != null && data.type !in setOf("geetest", "1"))) error("当前验证码类型不受支持，请改用二维码登录")
+        return CaptchaParameters(data.token, gt, challenge)
+    }
+
+    suspend fun sendSms(phone: String, captcha: CaptchaParameters, validate: String, seccode: String): String {
+        val response = postRaw<ApiResponse<SmsSendData>>("https://passport.bilibili.com/x/passport-login/web/sms/send",
+            mapOf("tel" to phone, "cid" to MAINLAND_CID, "token" to captcha.token, "challenge" to captcha.challenge,
+                "validate" to validate, "seccode" to seccode, "source" to "main_web"))
+        if (response.code != 0) throw ApiBusinessException(response.code, apiError(response.code))
+        return response.data?.captchaKey?.takeIf { it.isNotBlank() } ?: error("短信接口未返回 captcha_key")
+    }
+
+    suspend fun loginSms(phone: String, code: String, captchaKey: String): NavData {
+        val response = postRaw<ApiResponse<JsonElement>>("https://passport.bilibili.com/x/passport-login/web/login/sms",
+            mapOf("cid" to MAINLAND_CID, "tel" to phone, "code" to code, "captcha_key" to captchaKey,
+                "source" to "main_web", "go_url" to "https://www.bilibili.com/", "keep" to "true"))
+        if (response.code != 0) throw ApiBusinessException(response.code, apiError(response.code))
+        return profile().takeIf { it.isLogin } ?: error("短信验证完成，但登录状态校验失败，请改用二维码")
+    }
 
     suspend fun generateQr(): QrSession {
         val data = get<ApiResponse<QrData>>(
@@ -246,13 +313,27 @@ class BiliRepository(context: Context) {
     }
 
     private suspend fun post(url: String, values: Map<String, String>) = withContext(Dispatchers.IO) {
-        val csrf = cookieJar.value("bili_jct") ?: error("请先登录后再试")
+        val target = url.toHttpUrl()
+        val csrf = cookieJar.valueFor(target, "bili_jct") ?: error("请先登录后再试")
         val body = FormBody.Builder().apply { (values + ("csrf" to csrf)).forEach { (k, v) -> add(k, v) } }.build()
         val request = Request.Builder().url(url).header("Origin", "https://www.bilibili.com")
             .header("Referer", "https://www.bilibili.com/").post(body).build()
-        client.newCall(request).execute().use {
+        try { client.newCall(request).execute().use {
             if (!it.isSuccessful) error("操作失败（HTTP ${it.code}）")
-            json.decodeFromString<ApiResponse<JsonElement>>(it.body?.string().orEmpty()).requireDataOrUnit()
+            val response = json.decodeFromString<ApiResponse<JsonElement>>(it.body?.string().orEmpty())
+            if (response.code != 0) throw ApiBusinessException(response.code, apiError(response.code))
+        } } catch (error: ApiBusinessException) { throw error }
+        catch (error: IOException) { throw AmbiguousWriteException("写入结果未知", error) }
+        catch (error: SerializationException) { throw AmbiguousWriteException("写入结果未知", error) }
+    }
+
+    private suspend inline fun <reified T> postRaw(url: String, values: Map<String, String>): T = withContext(Dispatchers.IO) {
+        val body = FormBody.Builder().apply { values.forEach { (k, v) -> add(k, v) } }.build()
+        val request = Request.Builder().url(url).header("Origin", "https://www.bilibili.com")
+            .header("Referer", "https://www.bilibili.com/").post(body).build()
+        client.newCall(request).execute().use {
+            if (!it.isSuccessful) error("网络请求失败（HTTP ${it.code}）")
+            json.decodeFromString<T>(it.body?.string() ?: error("服务器返回了空内容"))
         }
     }
 
@@ -294,6 +375,8 @@ class BiliRepository(context: Context) {
     private fun encode(value: String): String = java.net.URLEncoder.encode(value, Charsets.UTF_8.name())
         .replace("+", "%20").replace("%7E", "~")
 }
+
+private const val MAINLAND_CID = "1"
 
 private fun String.parseDuration(): Int = split(':').fold(0) { total, part -> total * 60 + (part.toIntOrNull() ?: 0) }
 private fun String?.parseCount(): Long {

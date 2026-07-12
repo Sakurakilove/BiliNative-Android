@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -52,6 +53,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
 import dev.opencode.bilimobile.data.Danmaku
+import dev.opencode.bilimobile.data.DanmakuResult
 import dev.opencode.bilimobile.data.PlayResult
 import kotlinx.coroutines.delay
 
@@ -60,7 +62,12 @@ internal fun VideoPlayer(
     key: String,
     result: PlayResult,
     headers: Map<String, String>,
-    danmaku: List<Danmaku>,
+    danmaku: ContentState<DanmakuResult>,
+    loggedIn: Boolean,
+    danmakuPosting: ContentState<Unit>,
+    retryDanmaku: () -> Unit,
+    confirmDanmakuAfterRefresh: () -> Unit,
+    sendDanmaku: (String, Long, (Boolean) -> Unit) -> Unit,
     quality: (Int) -> Unit,
     fallback: (Boolean) -> Unit
 ) {
@@ -79,7 +86,6 @@ internal fun VideoPlayer(
             } ?: video
             setMediaSource(source)
             prepare()
-            seekTo(prefs.getLong(key, 0L))
             playWhenReady = true
         }
     }
@@ -94,14 +100,24 @@ internal fun VideoPlayer(
     var playing by remember { mutableStateOf(false) }
     var buffering by remember { mutableStateOf(true) }
     var playbackError by remember { mutableStateOf<String?>(null) }
+    var composeDanmaku by remember { mutableStateOf(false) }
+    var danmakuText by rememberSaveable { mutableStateOf("") }
     var fallbackSent by remember(result.videoUrls, result.audioUrl) { mutableStateOf(false) }
+    var pendingSavedSeek by remember(player, key) { mutableLongStateOf(prefs.getLong(key, 0L).coerceAtLeast(0L)) }
 
     DisposableEffect(player) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(value: Boolean) { playing = value }
             override fun onPlaybackStateChanged(state: Int) {
                 buffering = state == Player.STATE_BUFFERING
-                if (state == Player.STATE_READY) playbackError = null
+                if (state == Player.STATE_READY) {
+                    playbackError = null
+                    if (pendingSavedSeek > 0 && player.duration > 0) {
+                        player.seekTo(pendingSavedSeek.coerceAtMost(player.duration))
+                        pendingSavedSeek = 0
+                    }
+                    if (player.duration > 0 && player.currentPosition > player.duration) player.seekTo(player.duration)
+                }
             }
             override fun onPlayerError(error: PlaybackException) {
                 playbackError = "播放源连接失败"
@@ -132,27 +148,32 @@ internal fun VideoPlayer(
 
     val content: @Composable () -> Unit = {
       Box(Modifier.fillMaxSize().background(Color.Black).clickable { controls = !controls }) {
-        AndroidView({ PlayerView(it).apply { this.player = player; useController = false } }, Modifier.fillMaxSize())
-        if (showDanmaku) DanmakuOverlay(danmaku, position, opacity)
+        AndroidView({ PlayerView(it).apply { this.player = player; useController = false } }, Modifier.fillMaxSize(),
+            onRelease = { it.player = null })
+        if (showDanmaku) DanmakuOverlay(danmaku.value?.items.orEmpty(), position, opacity)
         if (buffering) CircularProgressIndicator(Modifier.align(Alignment.Center).size(34.dp), color = Color.White, strokeWidth = 3.dp)
         AnimatedVisibility(controls, enter = fadeIn(), exit = fadeOut()) {
           Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .28f))) {
             val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }
-            Row(Modifier.align(Alignment.Center), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                IconButton({ player.seekTo((player.currentPosition - 10_000).coerceAtLeast(0)) }) { Icon(Icons.Default.Replay10, stringResource(dev.opencode.bilimobile.R.string.rewind_10), tint = Color.White) }
-                FilledIconButton({ if (player.playbackState == Player.STATE_ENDED) { player.seekTo(0); player.play() } else if (playing) player.pause() else player.play() }, colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White.copy(.9f), contentColor = Color.Black)) {
+            Row(Modifier.align(Alignment.Center), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                IconButton({ player.seekTo((player.currentPosition - 10_000).coerceAtLeast(0)) }, Modifier.size(44.dp)) { Icon(Icons.Default.Replay10, stringResource(dev.opencode.bilimobile.R.string.rewind_10), tint = Color.White, modifier = Modifier.size(23.dp)) }
+                FilledIconButton({ if (player.playbackState == Player.STATE_ENDED) { player.seekTo(0); player.play() } else if (playing) player.pause() else player.play() }, Modifier.size(52.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White.copy(.9f), contentColor = Color.Black)) {
                     Icon(if (playing) Icons.Default.Pause else if (player.playbackState == Player.STATE_ENDED) Icons.Default.Replay else Icons.Default.PlayArrow, stringResource(if (playing) dev.opencode.bilimobile.R.string.pause else dev.opencode.bilimobile.R.string.play))
                 }
-                IconButton({ duration?.let { player.seekTo((player.currentPosition + 10_000).coerceAtMost(it)) } }, enabled = duration != null) { Icon(Icons.Default.Forward10, stringResource(dev.opencode.bilimobile.R.string.forward_10), tint = Color.White) }
+                IconButton({ duration?.let { player.seekTo((player.currentPosition + 10_000).coerceAtMost(it)) } }, Modifier.size(44.dp), enabled = duration != null) { Icon(Icons.Default.Forward10, stringResource(dev.opencode.bilimobile.R.string.forward_10), tint = Color.White, modifier = Modifier.size(23.dp)) }
             }
             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(.35f)).padding(horizontal = 10.dp, vertical = 4.dp)) {
-              Slider(value = position.coerceIn(0, duration ?: 1).toFloat(), onValueChange = { player.seekTo(it.toLong()) }, valueRange = 0f..(duration ?: 1).toFloat(), enabled = duration != null, modifier = Modifier.fillMaxWidth().height(24.dp))
+              Slider(value = position.coerceIn(0, duration ?: 1).toFloat(), onValueChange = { player.seekTo(it.toLong()) }, valueRange = 0f..(duration ?: 1).toFloat(), enabled = duration != null, modifier = Modifier.fillMaxWidth().height(20.dp), colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color.White.copy(.3f)))
               Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("${formatTime(position)} / ${duration?.let(::formatTime) ?: "--:--"}", color = Color.White, fontSize = 11.sp)
                 Spacer(Modifier.weight(1f))
-                TextButton({ showDanmaku = !showDanmaku }) { Text(if (showDanmaku) "弹幕开" else "弹幕关", color = if (showDanmaku) Color(0xFFFF7A9E) else Color.White) }
-            Box {
-                TextButton({ speedMenu = true }) { Text("${player.playbackParameters.speed}x", color = Color.White) }
+                 TextButton({ showDanmaku = !showDanmaku }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text(if (showDanmaku) "弹幕开" else "弹幕关", color = if (showDanmaku) Color(0xFFFF9AB5) else Color.White, fontSize = 11.sp) }
+                 TextButton({ if (danmaku.error != null) retryDanmaku() }, enabled = danmaku.error != null, contentPadding = PaddingValues(horizontal = 6.dp)) { Text(when { danmaku.loading -> "加载中"; danmaku.error != null -> "失败重试"; danmaku.value?.usedFallback == true -> "备用源 ${danmaku.value?.items?.size ?: 0}"; danmaku.value?.items.isNullOrEmpty() -> "暂无弹幕"; else -> "已载入 ${danmaku.value?.items?.size}" }, color = Color.White, fontSize = 11.sp) }
+              }
+              Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+             if (loggedIn) IconButton({ composeDanmaku = true }, Modifier.size(36.dp)) { Icon(Icons.Default.Edit, stringResource(dev.opencode.bilimobile.R.string.send_danmaku), tint = Color.White, modifier = Modifier.size(18.dp)) }
+             Box {
+                 TextButton({ speedMenu = true }, contentPadding = PaddingValues(horizontal = 7.dp)) { Text("${player.playbackParameters.speed}x", color = Color.White, fontSize = 11.sp) }
                 DropdownMenu(speedMenu, { speedMenu = false }) {
                     listOf(.75f, 1f, 1.25f, 1.5f, 2f).forEach { value ->
                         DropdownMenuItem({ Text("${value}x") }, { player.playbackParameters = PlaybackParameters(value); speedMenu = false })
@@ -160,7 +181,7 @@ internal fun VideoPlayer(
                 }
             }
             Box {
-                TextButton({ qualityMenu = true }) { Text(qualityName(result.quality), color = Color.White) }
+                 TextButton({ qualityMenu = true }, contentPadding = PaddingValues(horizontal = 7.dp)) { Text(qualityName(result.quality), color = Color.White, fontSize = 11.sp) }
                 DropdownMenu(qualityMenu, { qualityMenu = false }) {
                     result.availableQualities.distinct().sortedDescending().forEach { q ->
                         DropdownMenuItem({ Text(result.qualityLabels[q] ?: qualityName(q)) }, { qualityMenu = false; quality(q) })
@@ -168,7 +189,7 @@ internal fun VideoPlayer(
                     DropdownMenuItem({ Text(stringResource(dev.opencode.bilimobile.R.string.danmaku_opacity, (opacity * 100).toInt())) }, { opacity = if (opacity > .6f) .45f else .8f; qualityMenu = false })
                 }
             }
-            IconButton({ fullscreen = true }) { Icon(Icons.Default.Fullscreen, stringResource(dev.opencode.bilimobile.R.string.enter_fullscreen), tint = Color.White) }
+             IconButton({ fullscreen = true }, Modifier.size(36.dp)) { Icon(Icons.Default.Fullscreen, stringResource(dev.opencode.bilimobile.R.string.enter_fullscreen), tint = Color.White, modifier = Modifier.size(20.dp)) }
               }
             }
           }
@@ -193,6 +214,11 @@ internal fun VideoPlayer(
     } else {
         content()
     }
+    if (composeDanmaku) AlertDialog(onDismissRequest = { if (!danmakuPosting.loading) composeDanmaku = false },
+        title = { Text(stringResource(dev.opencode.bilimobile.R.string.send_danmaku)) },
+        text = { Column { OutlinedTextField(danmakuText, { danmakuText = it.take(100) }, singleLine = true); danmakuPosting.error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) } } },
+        confirmButton = { TextButton({ sendDanmaku(danmakuText, position) { ok -> if (ok) { danmakuText = ""; composeDanmaku = false } } }, enabled = danmakuText.isNotBlank() && !danmakuPosting.loading) { Text(if (danmakuPosting.loading) stringResource(dev.opencode.bilimobile.R.string.loading) else stringResource(dev.opencode.bilimobile.R.string.send)) } },
+        dismissButton = { if (danmakuPosting.error?.contains("刷新确认") == true) TextButton(confirmDanmakuAfterRefresh) { Text("刷新确认") } else TextButton({ composeDanmaku = false }, enabled = !danmakuPosting.loading) { Text(stringResource(dev.opencode.bilimobile.R.string.cancel)) } })
 }
 
 @Composable

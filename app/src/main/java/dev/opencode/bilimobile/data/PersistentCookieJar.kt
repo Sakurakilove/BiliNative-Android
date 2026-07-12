@@ -39,7 +39,8 @@ class PersistentCookieJar(context: Context) : CookieJar {
                 preferences.edit().remove(key).apply()
             } else {
                 this.cookies[key] = cookie
-                preferences.edit().putString(key, json.encodeToString(StoredCookie(cookie))).apply()
+                if (cookie.persistent) preferences.edit().putString(key, json.encodeToString(StoredCookie(cookie))).apply()
+                else preferences.edit().remove(key).apply()
             }
         }
     }
@@ -57,10 +58,7 @@ class PersistentCookieJar(context: Context) : CookieJar {
     }
 
     @Synchronized
-    fun value(name: String): String? {
-        removeExpired()
-        return cookies.values.firstOrNull { it.name == name }?.value
-    }
+    fun valueFor(url: HttpUrl, name: String): String? = loadForRequest(url).firstOrNull { it.name == name }?.value
 
     @Synchronized
     private fun removeExpired() {

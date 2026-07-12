@@ -12,9 +12,14 @@ import dev.opencode.bilimobile.data.NavData
 import dev.opencode.bilimobile.data.PlayResult
 import dev.opencode.bilimobile.data.Video
 import dev.opencode.bilimobile.data.Channel
-import dev.opencode.bilimobile.data.Danmaku
+import dev.opencode.bilimobile.data.DanmakuResult
+import dev.opencode.bilimobile.data.FavoriteResource
 import dev.opencode.bilimobile.data.DynamicVideo
 import dev.opencode.bilimobile.data.InteractionState
+import dev.opencode.bilimobile.data.AmbiguousWriteException
+import dev.opencode.bilimobile.data.ApiBusinessException
+import dev.opencode.bilimobile.data.CaptchaParameters
+import dev.opencode.bilimobile.data.SmsLoginState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -59,10 +64,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val interaction = _interaction.asStateFlow()
     private val _replies = MutableStateFlow<Map<Long, ContentState<List<Comment>>>>(emptyMap())
     val replies = _replies.asStateFlow()
-    private val _danmaku = MutableStateFlow(ContentState<List<Danmaku>>())
+    private val _danmaku = MutableStateFlow(ContentState<DanmakuResult>())
     val danmaku = _danmaku.asStateFlow()
+    private val _favoriteResources = MutableStateFlow(ContentState<List<FavoriteResource>>())
+    val favoriteResources = _favoriteResources.asStateFlow()
+    private val _commentPosting = MutableStateFlow(ContentState<Unit>())
+    val commentPosting = _commentPosting.asStateFlow()
+    private val _danmakuPosting = MutableStateFlow(ContentState<Unit>())
+    val danmakuPosting = _danmakuPosting.asStateFlow()
     private val _login = MutableStateFlow<LoginState>(LoginState.Idle)
     val login = _login.asStateFlow()
+    private val _smsLogin = MutableStateFlow<SmsLoginState>(SmsLoginState.Idle)
+    val smsLogin = _smsLogin.asStateFlow()
     private var loginJob: Job? = null
     private var profileJob: Job? = null
     private var searchJob: Job? = null
@@ -74,17 +87,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var commentsJob: Job? = null
     private var danmakuJob: Job? = null
     private var interactionJob: Job? = null
+    private var favoriteJob: Job? = null
+    private var commentPostingJob: Job? = null
+    private var danmakuPostingJob: Job? = null
+    private var smsJob: Job? = null
     private val replyJobs = mutableMapOf<Long, Job>()
     private val accountJobs = mutableListOf<Job>()
     private var searchRequest = 0
     private var detailsRequest = 0
     private var playRequest = 0
     private var commentPage = 1
+    private var favoritePage = 0
+    private var favoriteMediaId = 0L
+    private var favoriteGeneration = 0
+    private val _favoriteHasMore = MutableStateFlow(true)
+    val favoriteHasMore = _favoriteHasMore.asStateFlow()
+    private var blockedCommentDetail = -1
+    private var blockedDanmakuDetail = -1
     private var currentAid = 0L
     private var currentBvid = ""
     private var currentCid = 0L
     private val channelCache = mutableMapOf<Channel, List<Video>>()
     private val fallbackAttempts = mutableSetOf<Pair<String, Long>>()
+    private var smsCooldownUntilMillis = 0L
 
     init {
         refreshPopular()
@@ -156,6 +181,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _interaction.value = ContentState()
             _replies.value = emptyMap()
             _danmaku.value = ContentState()
+            _commentPosting.value = ContentState()
+            _danmakuPosting.value = ContentState()
             try {
                 val video = repository.details(bvid)
                 if (request != detailsRequest) return@launch
@@ -179,10 +206,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun loadDanmaku(cid: Long) {
         danmakuJob?.cancel()
+        _danmaku.value = ContentState(loading = cid > 0)
         val request = detailsRequest
         danmakuJob = viewModelScope.launch {
         if (cid <= 0) return@launch
-        _danmaku.value = ContentState(loading = true)
         try { val result = repository.danmaku(cid); if (request == detailsRequest && cid == currentCid) _danmaku.value = ContentState(result) }
         catch (error: CancellationException) { throw error }
         catch (error: Throwable) { if (request == detailsRequest && cid == currentCid) _danmaku.value = ContentState(error = error.userMessage()) }
@@ -221,6 +248,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val folders = state.favoriteFolderIds ?: return@updateInteraction state
         repository.setFavorite(aid, folderId, folderId !in folders); repository.interaction(aid)
     }
+    fun addCoin(aid: Long, count: Int, like: Boolean) = updateInteraction { state ->
+        repository.addCoin(aid, count, like); repository.interaction(aid)
+    }
+
+    fun postComment(message: String, finished: (Boolean) -> Unit) {
+        val normalized = message.trim()
+        if (_commentPosting.value.loading || blockedCommentDetail == detailsRequest || normalized.length !in 1..1000) return
+        val aid = currentAid; val request = detailsRequest
+        commentPostingJob = viewModelScope.launch {
+            _commentPosting.value = ContentState(loading = true)
+            try {
+                repository.postComment(aid, normalized)
+                if (request == detailsRequest && aid == currentAid) { _commentPosting.value = ContentState(Unit); loadComments(reset = true); finished(true) }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (request == detailsRequest && aid == currentAid) { if (error is AmbiguousWriteException) blockedCommentDetail = request; _commentPosting.value = ContentState(error = if (error is AmbiguousWriteException) "可能已发送，请刷新确认，勿重复发送" else error.userMessage()); finished(false) } }
+        }
+    }
+
+    fun postDanmaku(message: String, progress: Long, finished: (Boolean) -> Unit) {
+        val normalized = message.trim()
+        if (_danmakuPosting.value.loading || blockedDanmakuDetail == detailsRequest || normalized.length !in 1..100 || currentCid <= 0) return
+        val cid = currentCid; val request = detailsRequest
+        danmakuPostingJob = viewModelScope.launch {
+            _danmakuPosting.value = ContentState(loading = true)
+            try {
+                repository.postDanmaku(cid, currentBvid, currentAid, normalized, progress)
+                if (request == detailsRequest && cid == currentCid) { _danmakuPosting.value = ContentState(Unit); loadDanmaku(cid); finished(true) }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (request == detailsRequest && cid == currentCid) { if (error is AmbiguousWriteException) blockedDanmakuDetail = request; _danmakuPosting.value = ContentState(error = if (error is AmbiguousWriteException) "可能已发送，请刷新确认，勿重复发送" else error.userMessage()); finished(false) } }
+        }
+    }
 
     private fun updateInteraction(action: suspend (InteractionState) -> InteractionState) {
         if (interactionJob?.isActive == true) return
@@ -230,6 +288,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val old = _interaction.value.value ?: run { _interaction.value = ContentState(error = "请先登录后再试"); return@launch }
         _interaction.value = ContentState(old, loading = true)
         try { val result = action(old); if (request == detailsRequest && aid == currentAid) _interaction.value = ContentState(result) }
+        catch (error: AmbiguousWriteException) {
+            if (request == detailsRequest && aid == currentAid) {
+                val reconciled = runCatching { repository.interaction(aid) }.getOrNull()
+                _interaction.value = if (reconciled != null) ContentState(reconciled, error = "操作结果已重新同步")
+                else ContentState(old, error = "操作结果未知，请刷新确认")
+            }
+        }
         catch (error: Throwable) { if (request == detailsRequest && aid == currentAid) _interaction.value = ContentState(old, error = error.userMessage()) }
         }
     }
@@ -318,7 +383,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             catch (error: Throwable) { target.value = ContentState(error = error.userMessage()) }
         }
         accountJobs += load(_history) { repository.history() }
-        accountJobs += load(_watchLater) { repository.watchLaterPreview() }
+        accountJobs += load(_watchLater) { repository.watchLater() }
         accountJobs += load(_favorites) { repository.favoriteFolders(mid) }
     }
 
@@ -331,6 +396,71 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             catch (error: Throwable) { _favorites.value = ContentState(value = _favorites.value.value, error = error.userMessage()) }
         }
     }
+
+    fun loadFavoriteResources(mediaId: Long, reset: Boolean = false) {
+        if (favoriteJob?.isActive == true && !reset) return
+        if (!reset && mediaId == favoriteMediaId && !_favoriteHasMore.value) return
+        if (reset || mediaId != favoriteMediaId) { favoriteJob?.cancel(); favoriteGeneration++; favoriteMediaId = mediaId; favoritePage = 0; _favoriteHasMore.value = true; _favoriteResources.value = ContentState(loading = true) }
+        val generation = favoriteGeneration
+        favoriteJob = viewModelScope.launch {
+            val page = favoritePage + 1
+            _favoriteResources.value = _favoriteResources.value.copy(loading = true, error = null)
+            try {
+                val data = repository.favoriteResources(mediaId, page)
+                if (mediaId != favoriteMediaId || generation != favoriteGeneration) return@launch
+                val old = if (page == 1) emptyList() else _favoriteResources.value.value.orEmpty()
+                val merged = (old + data.medias.orEmpty().filter { it.id > 0 && it.bvid.isNotBlank() }).distinctBy { it.id to it.bvid }
+                _favoriteResources.value = ContentState(merged)
+                favoritePage = page; _favoriteHasMore.value = data.has_more
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (mediaId == favoriteMediaId) _favoriteResources.value = _favoriteResources.value.copy(loading = false, error = error.userMessage()) }
+        }
+    }
+
+    fun beginSmsCaptcha() {
+        if (smsJob?.isActive == true) return
+        if (System.currentTimeMillis() < smsCooldownUntilMillis) {
+            val sent = _smsLogin.value as? SmsLoginState.CodeSent
+            if (sent != null) _smsLogin.value = sent.copy(error = "请等待倒计时结束后再获取验证码")
+            return
+        }
+        loginJob?.cancel()
+        smsJob = viewModelScope.launch {
+            _smsLogin.value = SmsLoginState.CaptchaLoading
+            try { _smsLogin.value = SmsLoginState.CaptchaReady(repository.captcha()) }
+            catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { _smsLogin.value = SmsLoginState.Failed(error.userMessage(), error.isSmsRisk()) }
+        }
+    }
+
+    fun sendSms(phone: String, captcha: CaptchaParameters, validate: String, seccode: String) {
+        if (System.currentTimeMillis() < smsCooldownUntilMillis) return
+        if (smsJob?.isActive == true || !phone.matches(Regex("1[3-9]\\d{9}"))) { if (!phone.matches(Regex("1[3-9]\\d{9}"))) _smsLogin.value = SmsLoginState.Failed("请输入有效的中国大陆 11 位手机号", false); return }
+        smsJob = viewModelScope.launch {
+            _smsLogin.value = SmsLoginState.Sending
+            try { val key = repository.sendSms(phone, captcha, validate, seccode); smsCooldownUntilMillis = System.currentTimeMillis() + 60_000; _smsLogin.value = SmsLoginState.CodeSent(key, phone.take(3) + "****" + phone.takeLast(4), smsCooldownUntilMillis) }
+            catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { _smsLogin.value = SmsLoginState.Failed(error.userMessage(), error.isSmsRisk()) }
+        }
+    }
+
+    fun loginSms(phone: String, code: String, captchaKey: String) {
+        if (smsJob?.isActive == true || code.isBlank()) return
+        smsJob = viewModelScope.launch {
+            val sent = _smsLogin.value as? SmsLoginState.CodeSent ?: return@launch
+            _smsLogin.value = SmsLoginState.LoggingIn
+            try { repository.loginSms(phone, code, captchaKey); _smsLogin.value = SmsLoginState.Success; refreshProfile() }
+            catch (error: CancellationException) { throw error }
+            catch (error: Throwable) {
+                _smsLogin.value = if (error.isSmsRisk()) SmsLoginState.Failed(error.userMessage(), true)
+                else sent.copy(error = error.userMessage())
+            }
+        }
+    }
+
+    fun fallbackSmsToQr() { smsJob?.cancel(); _smsLogin.value = SmsLoginState.Idle; beginLogin() }
+
+    fun captchaFailed() { _smsLogin.value = SmsLoginState.Failed("验证码加载失败，请检查网络后重试", false) }
 
     fun beginLogin() {
         loginJob?.cancel()
@@ -351,7 +481,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Throwable) {
-                    _login.value = LoginState.Error(error.userMessage()); return@launch
+                    _login.value = LoginState.Error(error.userMessage(), qr); return@launch
                 }
                 when (status.code) {
                     0 -> {
@@ -376,7 +506,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissLogin() {
         loginJob?.cancel()
+        smsJob?.cancel()
         _login.value = LoginState.Idle
+        _smsLogin.value = SmsLoginState.Idle
     }
 
     fun logout() {
@@ -384,7 +516,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         accountJobs.forEach { it.cancel() }; accountJobs.clear()
         detailsJob?.cancel(); playJob?.cancel(); dynamicsJob?.cancel(); interactionJob?.cancel(); profileJob?.cancel()
         detailsRequest++; playRequest++
-        repository.logout()
+        favoriteJob?.cancel(); smsJob?.cancel(); favoriteGeneration++
         _history.value = ContentState()
         _watchLater.value = ContentState()
         _favorites.value = ContentState()
@@ -392,18 +524,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _interaction.value = ContentState()
         _replies.value = emptyMap()
         _danmaku.value = ContentState()
+        _favoriteResources.value = ContentState(); _commentPosting.value = ContentState(); _danmakuPosting.value = ContentState()
+        favoritePage = 0; favoriteMediaId = 0; _favoriteHasMore.value = true; blockedCommentDetail = -1; blockedDanmakuDetail = -1
         _profile.value = ContentState(loading = true)
         currentAid = 0; currentBvid = ""; currentCid = 0
         dismissLogin()
-        refreshProfile()
+        viewModelScope.launch {
+            val warning = runCatching { repository.logout() }.exceptionOrNull()?.let { "本地凭据已清除，但服务器退出状态不确定：${it.userMessage()}" }
+            refreshProfile()
+            profileJob?.join()
+            if (warning != null) _profile.value = ContentState(_profile.value.value, error = warning)
+        }
     }
 
     fun playbackHeaders() = repository.playbackHeaders()
 
     private fun cancelDetailJobs() {
-        relatedJob?.cancel(); commentsJob?.cancel(); danmakuJob?.cancel(); interactionJob?.cancel()
+        relatedJob?.cancel(); commentsJob?.cancel(); danmakuJob?.cancel(); interactionJob?.cancel(); commentPostingJob?.cancel(); danmakuPostingJob?.cancel()
         replyJobs.values.forEach { it.cancel() }; replyJobs.clear()
     }
+
+    fun clearCommentPostingAfterRefresh() {
+        loadComments(reset = true)
+        blockedCommentDetail = -1
+        _commentPosting.value = ContentState()
+    }
+
+    fun clearDanmakuPostingAfterRefresh() {
+        loadDanmaku(currentCid)
+        blockedDanmakuDetail = -1
+        _danmakuPosting.value = ContentState()
+    }
+
+    private fun Throwable.isSmsRisk() = this is ApiBusinessException && code in setOf(-412, -403, 86038, 86090)
 
     private fun Throwable.userMessage(): String {
         val raw = message.orEmpty()

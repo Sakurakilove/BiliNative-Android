@@ -107,7 +107,25 @@ data class NavData(
 @Serializable data class QrData(val url: String = "", val qrcode_key: String = "")
 @Serializable data class QrPollData(val code: Int = -1, val message: String = "")
 
-data class QrSession(val key: String, val url: String)
+data class QrSession(val key: String, val url: String, val createdAtMillis: Long = System.currentTimeMillis())
+
+@Serializable data class CaptchaData(
+    val type: String? = null, val token: String? = null, val geetest: GeetestData? = null
+)
+@Serializable data class GeetestData(val gt: String? = null, val challenge: String? = null)
+@Serializable data class SmsSendData(@SerialName("captcha_key") val captchaKey: String? = null)
+data class CaptchaParameters(val token: String, val gt: String, val challenge: String)
+
+sealed interface SmsLoginState {
+    data object Idle : SmsLoginState
+    data object CaptchaLoading : SmsLoginState
+    data class CaptchaReady(val parameters: CaptchaParameters) : SmsLoginState
+    data object Sending : SmsLoginState
+    data class CodeSent(val captchaKey: String, val maskedPhone: String, val cooldownUntilMillis: Long, val error: String? = null) : SmsLoginState
+    data object LoggingIn : SmsLoginState
+    data class Failed(val message: String, val fallbackToQr: Boolean = true) : SmsLoginState
+    data object Success : SmsLoginState
+}
 
 sealed interface LoginState {
     data object Idle : LoginState
@@ -115,7 +133,7 @@ sealed interface LoginState {
     data class Ready(val qr: QrSession) : LoginState
     data class Scanned(val qr: QrSession) : LoginState
     data object Success : LoginState
-    data class Error(val message: String) : LoginState
+    data class Error(val message: String, val qr: QrSession? = null) : LoginState
 }
 
 @Serializable data class ReplyData(val page: ReplyPage = ReplyPage(), val replies: List<Comment>? = emptyList())
@@ -141,6 +159,19 @@ sealed interface LoginState {
     val id: Long = 0, val title: String = "", val media_count: Int = 0,
     val fav_state: Int = 0
 ) { val isFavorite: Boolean get() = fav_state == 1 }
+@Serializable data class FavoriteResourceData(
+    val info: FavoriteFolder = FavoriteFolder(), val medias: List<FavoriteResource>? = emptyList(),
+    val has_more: Boolean = false
+)
+@Serializable data class FavoriteResource(
+    val id: Long = 0, val bvid: String = "", val title: String = "", val cover: String = "",
+    val duration: Int = 0, val upper: Owner = Owner(), val cnt_info: FavoriteResourceCount = FavoriteResourceCount()
+) {
+    fun asVideo() = Video(aid = id, bvid = bvid, title = title, pic = cover, duration = duration,
+        owner = upper, stat = Stat(view = cnt_info.play))
+}
+@Serializable data class FavoriteResourceCount(val play: Long = 0)
+@Serializable data class CoinData(val multiply: Int = 0)
 
 data class PlayResult(
     val videoUrls: List<String>, val audioUrl: String? = null, val quality: Int,
@@ -153,6 +184,8 @@ data class DynamicVideo(val id: String, val video: Video, val text: String = "",
 data class InteractionState(
     val liked: Boolean? = null,
     val watchLater: Boolean? = null,
-    val favoriteFolderIds: Set<Long>? = null
+    val favoriteFolderIds: Set<Long>? = null,
+    val coinCount: Int? = null
 ) { val favorite: Boolean? get() = favoriteFolderIds?.isNotEmpty() }
 data class Danmaku(val time: Float, val mode: Int, val color: Long, val text: String)
+data class DanmakuResult(val items: List<Danmaku>, val usedFallback: Boolean, val source: String)

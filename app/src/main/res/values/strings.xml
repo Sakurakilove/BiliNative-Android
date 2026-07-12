@@ -16,4 +16,12 @@
     <string name="danmaku">弹幕</string><string name="fullscreen">切换全屏</string><string name="settings_about">设置与关于</string>
     <string name="danmaku_short">弹</string><string name="danmaku_opacity">弹幕透明度 %1$d%%</string><string name="enter_fullscreen">进入全屏</string>
     <string name="play">播放</string><string name="pause">暂停</string><string name="rewind_10">后退 10 秒</string><string name="forward_10">前进 10 秒</string>
+    <string name="send">发送</string><string name="sending">发送中</string><string name="send_danmaku">发送弹幕</string>
+    <string name="comment_hint">友善地发表一条评论（1–1000 字）</string><string name="send_comment">发表评论</string><string name="comment_login_prompt">登录后可发表评论；当前仅支持顶层评论。</string>
+    <string name="coin_title">投硬币</string><string name="coin_warning">此操作会真实消耗硬币且不可撤销，请确认数量。</string><string name="coin_like_too">同时点赞</string><string name="confirm_pay">确认投币</string>
+    <string name="view_all">查看全部</string><string name="back">返回</string><string name="refresh">刷新</string><string name="close">关闭</string><string name="item_count">%1$d 个内容</string>
+    <string name="privacy_title">隐私与数据说明</string>
+    <string name="privacy_statement">内容与账号请求由设备直接发送至哔哩哔哩官方域名或 CDN；实验性短信登录会向第三方 Geetest 极验域名请求验证码资源。持久登录 Cookie 加密存储在本机，会话 Cookie 仅保留在内存；播放位置保存在本机；视频图片使用 Coil 的内存和磁盘缓存。验证码 WebView 关闭时会尽力清除缓存与历史。退出登录会清除本地登录凭据。本应用为非官方应用，所依赖的未公开 Web API 可能随时变更。</string>
+    <string name="qr_countdown">二维码约 %1$d 秒后过期</string><string name="regenerate_qr">重新生成二维码</string><string name="open_qr_browser">在浏览器打开（第二台设备/模拟器）</string>
+    <string name="login_integration_note">不收集密码。支持二维码授权及实验性中国大陆短信登录；短信接口和验证码流程可能随时失效。</string>
 </resources>
