@@ -198,6 +198,7 @@ private sealed interface AccountDestination { data object History : AccountDesti
 @Composable private fun CommentRow(comment: Comment, state: ContentState<List<Comment>>?, load: () -> Unit) { Column(Modifier.padding(horizontal = 16.dp, vertical = 9.dp)) { Row { NetworkImage(comment.member.avatar, comment.member.uname, Modifier.size(36.dp).clip(CircleShape), 72, 72); Spacer(Modifier.width(10.dp)); Column(Modifier.weight(1f)) { Text(comment.member.uname.ifBlank { "用户" }, fontWeight = FontWeight.SemiBold, fontSize = 13.sp); Text(comment.content.message, lineHeight = 20.sp); Text("${formatDate(comment.ctime)} · ${comment.like}赞", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); if (comment.rcount > 0 && state == null) TextButton(load) { Text("展开 ${comment.rcount} 条回复") } } }; if (state?.loading == true) LinearProgressIndicator(Modifier.fillMaxWidth()); state?.value.orEmpty().forEach { reply -> Text("${reply.member.uname}: ${reply.content.message}", Modifier.padding(start = 46.dp, top = 6.dp), fontSize = 13.sp) } }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun AccountScreen(destination: AccountDestination, vm: MainViewModel, navigate: (AccountDestination?) -> Unit, open: (String) -> Unit) {
     val history by vm.history.collectAsState(); val later by vm.watchLater.collectAsState(); val favorites by vm.favorites.collectAsState(); val resources by vm.favoriteResources.collectAsState(); val favoriteHasMore by vm.favoriteHasMore.collectAsState()
     if (destination is AccountDestination.Folder) LaunchedEffect(destination.id) { vm.loadFavoriteResources(destination.id, reset = true) }
@@ -252,7 +253,7 @@ private data class PreviewItem(val title: String, val id: String, val image: Str
         if (sms is SmsLoginState.Idle) TextButton(vm::beginSmsCaptcha) { Text("短信验证码（实验性）") } else TextButton(vm::fallbackSmsToQr) { Text("返回可靠的二维码登录") }
         Text("实验性短信流程会直连哔哩哔哩及第三方 Geetest 极验域名，不经过私人中转服务器，不收集密码。图片由 Coil 使用磁盘/内存缓存。", fontSize = 11.sp, lineHeight = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         TextButton(vm::dismissLogin) { Text("关闭") }
-    } } }
+    } } } }
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable private fun CaptchaWebView(parameters: CaptchaParameters, success: (String, String) -> Unit, failure: () -> Unit) {
@@ -266,7 +267,6 @@ private data class PreviewItem(val title: String, val id: String, val image: Str
         override fun onReceivedError(v: WebView, request: WebResourceRequest, error: android.webkit.WebResourceError) { if (request.isForMainFrame) bridge.onFailure(attempt) }
     }; view.loadDataWithBaseURL("https://passport.bilibili.com/", captchaHtml(parameters, attempt), "text/html", "UTF-8", null) } }, Modifier.fillMaxWidth().height(280.dp))
     DisposableEffect(attempt) { onDispose { bridge.invalidate(); webView?.apply { removeJavascriptInterface("CaptchaBridge"); stopLoading(); clearHistory(); clearCache(true); loadUrl("about:blank"); destroy() } } }
-}
 }
 
 private fun captchaHtml(value: CaptchaParameters, attempt: String) = """<!doctype html><meta name=viewport content='width=device-width'><div id=captcha></div><script src='https://static.geetest.com/static/tools/gt.js'></script><script>try{initGeetest({gt:${JSONObject.quote(value.gt)},challenge:${JSONObject.quote(value.challenge)},offline:false,new_captcha:true,product:'bind'},function(c){c.appendTo('#captcha');c.onSuccess(function(){var r=c.getValidate();CaptchaBridge.onSuccess(${JSONObject.quote(attempt)},r.geetest_validate,r.geetest_seccode)});c.onError(function(){CaptchaBridge.onFailure(${JSONObject.quote(attempt)})})})}catch(e){CaptchaBridge.onFailure(${JSONObject.quote(attempt)})}</script>"""
