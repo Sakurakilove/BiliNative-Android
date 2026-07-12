@@ -95,11 +95,16 @@ private sealed interface AccountDestination { data object History : AccountDesti
         }
     }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
-            AnimatedContent(listOf(detail, search, account, liveRoom), label = "destination") {
-                when { liveRoom > 0 -> LiveRoomScreen(liveRoom, vm)
-                    detail != null -> DetailScreen(detail!!, vm) { detail = it }
-                    search -> SearchScreen(vm, { search = false }, { detail = it })
-                    account != null -> AccountScreen(account, vm, ::setAccount, { detail = it })
+            AnimatedContent(listOf(detail, search, account, liveRoom), label = "destination") { target ->
+                val d = target[0] as String?
+                val s = target[1] as Boolean
+                val a = target[2] as AccountDestination?
+                val lr = target[3] as Long
+                when {
+                    lr > 0L -> LiveRoomScreen(lr, vm)
+                    d != null -> DetailScreen(d, vm) { detail = it }
+                    s -> SearchScreen(vm, { search = false }, { detail = it })
+                    a != null -> AccountScreen(a, vm, ::setAccount, { detail = it })
                     tab == RootTab.Home -> HomeScreen(vm, { search = true }, { detail = it }, { liveRoom = it })
                     tab == RootTab.Dynamic -> DynamicScreen(vm) { detail = it }
                     else -> ProfileScreen(vm, ::setAccount) { detail = it }
