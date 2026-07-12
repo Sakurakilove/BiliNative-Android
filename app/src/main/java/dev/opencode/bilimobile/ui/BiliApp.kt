@@ -255,10 +255,10 @@ private data class PreviewItem(val title: String, val id: String, val image: Str
         TextButton(vm::dismissLogin) { Text("关闭") }
     } } } }
 
-@SuppressLint("SetJavaScriptEnabled")
+@SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
 @Composable private fun CaptchaWebView(parameters: CaptchaParameters, success: (String, String) -> Unit, failure: () -> Unit) {
     val attempt = remember(parameters) { UUID.randomUUID().toString() }
-    val bridge = remember(attempt) { CaptchaBridge(attempt, success, failure) }
+    val bridge: CaptchaBridge = remember(attempt) { CaptchaBridge(attempt, success, failure) }
     var webView by remember { mutableStateOf<WebView?>(null) }
     AndroidView({ context -> WebView(context).also { view -> webView = view; view.settings.apply { javaScriptEnabled = true; allowFileAccess = false; allowContentAccess = false; databaseEnabled = false; cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE; mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW; domStorageEnabled = false }; if (android.os.Build.VERSION.SDK_INT >= 26) view.settings.safeBrowsingEnabled = true; view.addJavascriptInterface(bridge, "CaptchaBridge"); view.webViewClient = object : WebViewClient() {
         private fun allowed(request: WebResourceRequest): Boolean { val host = request.url.host.orEmpty(); return request.url.scheme == "https" && (host == "bilibili.com" || host.endsWith(".bilibili.com") || host == "geetest.com" || host.endsWith(".geetest.com")) }
