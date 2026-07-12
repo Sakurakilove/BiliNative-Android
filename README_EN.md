@@ -44,6 +44,26 @@ A **third-party**, non-official Bilibili Android client built with Kotlin and Je
 
 ---
 
+## Features Not Planned
+
+For compliance, privacy, and the "lightweight, power-saving, minimal" positioning, the following are **explicitly out of scope**:
+
+- **Live gifting / tips**: No virtual currency, recharge, or gift flows.
+- **Reverse-engineering the official client**: No cracking or reuse of the official app's private protocols, keys, or signing logic.
+- **Charging (UP sponsorship)**: No paid sponsorship interfaces.
+- **Push notifications**: No Push service, to avoid background residency and extra battery drain.
+
+## Planned Features (actively iterated)
+
+- **Short-video feed**: Bilibili's home separates long and short videos (uniform cover size). Plan to add an immersive vertical swipe-to-watch short-video screen that plays continuously as you scroll down.
+- **Follow**: Try to add one-tap follow / unfollow for UPs and a following feed entry.
+- **UP space dynamics**: Complete the dynamics view and pagination inside an uploader's profile space.
+- **UI rebuild**: Continuously refine the UI into a more polished, minimal design.
+- **Premium content playback**: Attempt to support Bilibili Premium (大会员) exclusive content.
+- **Anime & movie playback**: Attempt to support bangumi (番剧) and movie playback.
+
+---
+
 ## Build & Run
 
 1. Open this directory in Android Studio (JDK 17).
@@ -85,24 +105,6 @@ Alternatively, **GitHub Actions** builds automatically: the workflow runs `lintD
 7. **Takedown**: If a rights holder raises an objection, the developer will cooperate by taking down or disabling the relevant functionality.
 
 ---
-
-## Features Not Planned
-
-For compliance, privacy, and the "lightweight, power-saving, minimal" positioning, the following are **explicitly out of scope**:
-
-- **Live gifting / tips**: No virtual currency, recharge, or gift flows.
-- **Reverse-engineering the official client**: No cracking or reuse of the official app's private protocols, keys, or signing logic.
-- **Charging (UP sponsorship)**: No paid sponsorship interfaces.
-- **Push notifications**: No Push service, to avoid background residency and extra battery drain.
-
-## Planned Features (actively iterated)
-
-- **Short-video feed**: Bilibili's home separates long and short videos (uniform cover size). Plan to add an immersive vertical swipe-to-watch short-video screen that plays continuously as you scroll down.
-- **Follow**: Try to add one-tap follow / unfollow for UPs and a following feed entry.
-- **UP space dynamics**: Complete the dynamics view and pagination inside an uploader's profile space.
-- **UI rebuild**: Continuously refine the UI into a more polished, minimal design.
-- **Premium content playback**: Attempt to support Bilibili Premium (大会员) exclusive content.
-- **Anime & movie playback**: Attempt to support bangumi (番剧) and movie playback.
 
 ## License
 
