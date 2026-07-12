@@ -19,6 +19,9 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
+import java.util.zip.GZIPInputStream
+import java.util.zip.Inflater
+import java.util.zip.InflaterInputStream
 
 class AmbiguousWriteException(message: String, cause: Throwable) : IOException(message, cause)
 class ApiBusinessException(val code: Int, message: String) : IllegalStateException(message)
@@ -67,11 +70,12 @@ class BiliRepository(context: Context) {
             info.string("uname"), info.string("area_name", "parent_area_name"), info.long("online"))
     }
 
-    suspend fun livePlayInfo(roomId: Long, quality: Int = 0): LivePlayInfo {
+    suspend fun livePlayInfo(roomId: Long, quality: Int = 10000): LivePlayInfo {
         val url = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo".toHttpUrl().newBuilder()
-            .addQueryParameter("room_id", roomId.toString()).addQueryParameter("protocol", "0,1")
-            .addQueryParameter("format", "0,1,2").addQueryParameter("codec", "0")
-            .addQueryParameter("qn", quality.toString()).addQueryParameter("platform", "web").build().toString()
+            .addQueryParameter("room_id", roomId.toString()).addQueryParameter("protocol", "1")
+            .addQueryParameter("format", "1,2").addQueryParameter("codec", "0")
+            .addQueryParameter("qn", quality.toString()).addQueryParameter("platform", "web")
+            .addQueryParameter("ptype", "8").build().toString()
         val data = get<JsonElement>(url).apiData().jsonObject
         val playurl = data["playurl_info"]?.jsonObject?.get("playurl")?.jsonObject
         val descriptions = playurl?.get("g_qn_desc")?.jsonArray.orEmpty().associate { q ->
@@ -82,7 +86,7 @@ class BiliRepository(context: Context) {
         streams.forEach { stream -> stream.jsonObject["format"]?.jsonArray.orEmpty().forEach { format ->
             val formatObj = format.jsonObject
             val formatName = formatObj.string("format_name")
-            val hlsFormat = formatName.equals("ts", true) || formatName.contains("hls", true)
+            val hlsFormat = formatName.equals("ts", true) || formatName.equals("fmp4", true) || formatName.contains("hls", true)
             if (!hlsFormat) return@forEach
             formatObj["codec"]?.jsonArray.orEmpty().forEach { codec ->
                 val c = codec.jsonObject
@@ -91,19 +95,23 @@ class BiliRepository(context: Context) {
                     c["url_info"]?.jsonArray.orEmpty().forEach { address ->
                         val a = address.jsonObject; val qn = c.long("current_qn").toInt()
                         val full = a.string("host") + base + a.string("extra")
-                        if (full.startsWith("http")) results += LiveQuality(qn, descriptions[qn] ?: "清晰度 $qn", full, hls = hlsFormat || full.endsWith(".m3u8"))
+                        if (full.startsWith("http")) results += LiveQuality(qn, descriptions[qn] ?: "清晰度 $qn", full, formatName)
                     }
                 }
             }
         } }
-        return LivePlayInfo(results.distinctBy { it.quality }.sortedByDescending { it.quality })
+        return LivePlayInfo(results.distinctBy { it.url }.sortedWith(
+            compareBy<LiveQuality> { if (it.format.equals("fmp4", true)) 0 else 1 }
+                .thenByDescending { it.quality }
+        ))
     }
 
     suspend fun liveHistory(roomId: Long): List<LiveMessage> {
         val data = get<JsonElement>("https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory?roomid=$roomId").apiData().jsonObject
         return (data["room"]?.jsonArray.orEmpty() + data["admin"]?.jsonArray.orEmpty()).takeLast(100).mapIndexedNotNull { index, value -> runCatching {
             val item = value.jsonObject; val text = item.string("text").take(100)
-            LiveMessage(item.string("id_str", "timeline") + ":$index:$text", item.string("nickname"), text, System.currentTimeMillis())
+            val timeline = item.string("timeline")
+            LiveMessage(item.string("id_str").ifBlank { "$timeline:${item.string("uid")}:$text" }, item.string("nickname"), text, System.currentTimeMillis())
         }.getOrNull()?.takeIf { it.text.isNotBlank() } }
     }
 
@@ -259,8 +267,12 @@ class BiliRepository(context: Context) {
     suspend fun postComment(aid: Long, message: String) = post("https://api.bilibili.com/x/v2/reply/add",
         mapOf("type" to "1", "oid" to aid.toString(), "message" to message, "plat" to "1"))
 
-    suspend fun addCoin(aid: Long, multiply: Int, selectLike: Boolean) = post("https://api.bilibili.com/x/web-interface/coin/add",
-        mapOf("aid" to aid.toString(), "multiply" to multiply.toString(), "select_like" to if (selectLike) "1" else "0"))
+    suspend fun addCoin(aid: Long, bvid: String, multiply: Int, selectLike: Boolean) = post(
+        "https://api.bilibili.com/x/web-interface/coin/add",
+        mapOf("aid" to aid.toString(), "bvid" to bvid, "multiply" to multiply.toString(),
+            "select_like" to if (selectLike) "1" else "0"),
+        referer = "https://www.bilibili.com/video/$bvid/"
+    )
 
     suspend fun postDanmaku(cid: Long, bvid: String, aid: Long, message: String, progress: Long) = post(
         "https://api.bilibili.com/x/v2/dm/post", mapOf("type" to "1", "oid" to cid.toString(),
@@ -284,7 +296,13 @@ class BiliRepository(context: Context) {
             .header("Referer", "https://www.bilibili.com/").build()).execute()
         response.use {
             if (!it.isSuccessful) error("弹幕加载失败（HTTP ${it.code}）")
-            val parser = android.util.Xml.newPullParser().apply { setInput(it.body?.byteStream(), "UTF-8") }
+            val body = it.body ?: error("弹幕接口返回空内容")
+            val stream = when (it.header("Content-Encoding")?.lowercase()) {
+                "deflate" -> InflaterInputStream(body.byteStream(), Inflater(true))
+                "gzip" -> GZIPInputStream(body.byteStream())
+                else -> body.byteStream()
+            }
+            val parser = android.util.Xml.newPullParser().apply { setInput(stream, null) }
             return buildList {
                 while (parser.eventType != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
                     if (parser.eventType == org.xmlpull.v1.XmlPullParser.START_TAG && parser.name == "d") {
@@ -316,6 +334,18 @@ class BiliRepository(context: Context) {
         return buildMap {
             put("Referer", "https://www.bilibili.com/")
             put("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Mobile Safari/537.36")
+            if (cookieHeader.isNotBlank()) put("Cookie", cookieHeader)
+        }
+    }
+
+    fun livePlaybackHeaders(roomId: Long): Map<String, String> {
+        val page = "https://live.bilibili.com/$roomId"
+        val cookieHeader = cookieJar.loadForRequest(page.toHttpUrl()).joinToString("; ") { "${it.name}=${it.value}" }
+        return buildMap {
+            put("Referer", page)
+            put("Origin", "https://live.bilibili.com")
+            put("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Mobile Safari/537.36")
+            put("Cache-Control", "no-cache")
             if (cookieHeader.isNotBlank()) put("Cookie", cookieHeader)
         }
     }
@@ -377,16 +407,17 @@ class BiliRepository(context: Context) {
         }
     }
 
-    private suspend fun post(url: String, values: Map<String, String>) = withContext(Dispatchers.IO) {
+    private suspend fun post(url: String, values: Map<String, String>, referer: String = "https://www.bilibili.com/") = withContext(Dispatchers.IO) {
         val target = url.toHttpUrl()
+        cookieJar.valueFor(target, "SESSDATA") ?: error("登录会话已失效，请重新登录")
         val csrf = cookieJar.valueFor(target, "bili_jct") ?: error("请先登录后再试")
         val body = FormBody.Builder().apply { (values + mapOf("csrf" to csrf, "csrf_token" to csrf)).forEach { (k, v) -> add(k, v) } }.build()
         val request = Request.Builder().url(url).header("Origin", "https://www.bilibili.com")
-            .header("Referer", "https://www.bilibili.com/").post(body).build()
+            .header("Referer", referer).post(body).build()
         try { client.newCall(request).execute().use {
             if (!it.isSuccessful) error("操作失败（HTTP ${it.code}）")
             val response = json.decodeFromString<ApiResponse<JsonElement>>(it.body?.string().orEmpty())
-            if (response.code != 0) throw ApiBusinessException(response.code, apiError(response.code))
+            if (response.code != 0) throw ApiBusinessException(response.code, response.message.ifBlank { apiError(response.code) })
         } } catch (error: ApiBusinessException) { throw error }
         catch (error: IOException) { throw AmbiguousWriteException("写入结果未知", error) }
         catch (error: SerializationException) { throw AmbiguousWriteException("写入结果未知", error) }
@@ -411,6 +442,7 @@ class BiliRepository(context: Context) {
 
     private fun apiError(code: Int) = when (code) {
         -101 -> "请先登录后再试"
+        -401 -> "登录会话校验失败，请退出后重新登录"
         -111 -> "登录状态已失效，请重新登录"
         -400 -> "请求参数有误"
         -403, -412 -> "请求被服务器限制，请稍后再试"

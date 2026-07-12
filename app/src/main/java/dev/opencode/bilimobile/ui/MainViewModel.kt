@@ -186,7 +186,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshDynamicsIfStale() { if (System.currentTimeMillis() - dynamicsLoadedAt > 60_000) loadDynamics() }
 
-    fun loadLiveRoom(roomId: Long, quality: Int = 0) {
+    fun loadLiveRoom(roomId: Long, quality: Int = 10000) {
         liveJob?.cancel()
         liveJob = viewModelScope.launch {
             _liveDetail.value = ContentState(loading = true); _livePlay.value = ContentState(loading = true)
@@ -199,7 +199,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val merged = (_liveMessages.value.value.orEmpty() + incoming).distinctBy { it.id }.takeLast(100)
                         _liveMessages.value = ContentState(merged)
                     }.onFailure { _liveMessages.value = _liveMessages.value.copy(error = it.userMessage()) }
-                    delay(4_000)
+                    delay(2_000)
                 }
             } catch (error: CancellationException) { throw error }
             catch (error: Throwable) { _liveDetail.value = ContentState(error = error.userMessage()); _livePlay.value = ContentState(error = error.userMessage()) }
@@ -316,8 +316,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val folders = state.favoriteFolderIds ?: return@updateInteraction state
         repository.setFavorite(aid, folderId, folderId !in folders); repository.interaction(aid)
     }
-    fun addCoin(aid: Long, count: Int, like: Boolean) = updateInteraction { state ->
-        repository.addCoin(aid, count, like); repository.interaction(aid)
+    fun addCoin(aid: Long, bvid: String, count: Int, like: Boolean) = updateInteraction { state ->
+        repository.addCoin(aid, bvid, count, like); repository.interaction(aid)
     }
 
     fun postComment(message: String, finished: (Boolean) -> Unit) {
@@ -565,6 +565,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 when (status.code) {
                     0 -> {
+                        val verified = runCatching { repository.profile() }.getOrNull()
+                        if (verified?.isLogin != true) {
+                            _login.value = LoginState.Error("扫码完成，但登录凭据校验失败，请重新生成二维码")
+                            return@launch
+                        }
                         _login.value = LoginState.Success
                         refreshProfile()
                         return@launch
@@ -619,6 +624,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun playbackHeaders() = repository.playbackHeaders()
+    fun livePlaybackHeaders(roomId: Long) = repository.livePlaybackHeaders(roomId)
 
     private fun cancelDetailJobs() {
         relatedJob?.cancel(); commentsJob?.cancel(); danmakuJob?.cancel(); interactionJob?.cancel(); commentPostingJob?.cancel(); danmakuPostingJob?.cancel()

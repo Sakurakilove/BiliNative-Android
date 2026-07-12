@@ -46,6 +46,8 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultLivePlaybackSpeedControl
 import androidx.media3.exoplayer.source.ConcatenatingMediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
@@ -98,6 +100,8 @@ internal fun VideoPlayer(
         }
     }
     var position by remember { mutableLongStateOf(0L) }
+    var scrubPosition by remember { mutableLongStateOf(0L) }
+    var scrubbing by remember { mutableStateOf(false) }
     var showDanmaku by rememberSaveable { mutableStateOf(true) }
     var opacity by rememberSaveable { mutableFloatStateOf(.78f) }
     var font by rememberSaveable { mutableStateOf(DanmakuFont.Medium) }
@@ -147,7 +151,7 @@ internal fun VideoPlayer(
         onDispose { player.removeListener(listener) }
     }
     LaunchedEffect(player, result) { playbackError = null }
-    LaunchedEffect(player) { while (true) { position = player.currentPosition; delay(250) } }
+    LaunchedEffect(player) { while (true) { if (!scrubbing) position = player.currentPosition; delay(250) } }
     LaunchedEffect(controls, playing) { if (controls && playing) { delay(2_500); controls = false } }
     DisposableEffect(player) { onDispose { prefs.edit().putLong(key, player.currentPosition).apply(); player.release() } }
     DisposableEffect(owner, player) {
@@ -168,7 +172,7 @@ internal fun VideoPlayer(
             onRelease = { it.player = null })
         if (showDanmaku) DanmakuOverlay(danmaku.value?.items.orEmpty(), position, opacity, font, danmakuSpeed, area, maximumLanes, scrolling, topMode, bottomMode, controls)
         if (buffering) CircularProgressIndicator(Modifier.align(Alignment.Center).size(34.dp), color = Color.White, strokeWidth = 3.dp)
-        AnimatedVisibility(controls, enter = fadeIn(), exit = fadeOut()) {
+        AnimatedVisibility(controls, Modifier.fillMaxSize(), enter = fadeIn(), exit = fadeOut()) {
           Box(Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxWidth().height(52.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(.58f), Color.Transparent))))
             val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }
@@ -180,7 +184,14 @@ internal fun VideoPlayer(
                  IconButton({ duration?.let { player.seekTo((player.currentPosition + 10_000).coerceAtMost(it)) } }, Modifier.size(38.dp), enabled = duration != null) { Icon(Icons.Default.Forward10, stringResource(dev.opencode.bilimobile.R.string.forward_10), tint = Color.White, modifier = Modifier.size(22.dp)) }
              }
             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(.7f)))).padding(horizontal = 8.dp, vertical = 3.dp)) {
-              Slider(value = position.coerceIn(0, duration ?: 1).toFloat(), onValueChange = { player.seekTo(it.toLong()) }, valueRange = 0f..(duration ?: 1).toFloat(), enabled = duration != null, modifier = Modifier.fillMaxWidth().height(20.dp), colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color.White.copy(.3f)))
+               Slider(
+                   value = (if (scrubbing) scrubPosition else position).coerceIn(0, duration ?: 1).toFloat(),
+                   onValueChange = { scrubbing = true; scrubPosition = it.toLong() },
+                   onValueChangeFinished = { player.seekTo(scrubPosition); position = scrubPosition; scrubbing = false },
+                   valueRange = 0f..(duration ?: 1).toFloat(), enabled = duration != null,
+                   modifier = Modifier.fillMaxWidth().heightIn(min = 40.dp),
+                   colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color.White.copy(.3f))
+               )
               Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("${formatTime(position)} / ${duration?.let(::formatTime) ?: "--:--"}", color = Color.White, fontSize = 11.sp)
                 Spacer(Modifier.weight(1f))
@@ -244,17 +255,23 @@ private fun DanmakuSettings(enabled: Boolean, setEnabled: (Boolean) -> Unit, opa
     area: DanmakuArea, setArea: (DanmakuArea) -> Unit, lanes: Int, setLanes: (Int) -> Unit,
     scrolling: Boolean, setScrolling: (Boolean) -> Unit, top: Boolean, setTop: (Boolean) -> Unit,
     bottom: Boolean, setBottom: (Boolean) -> Unit, state: ContentState<DanmakuResult>, retry: () -> Unit, dismiss: () -> Unit) {
-    AlertDialog(onDismissRequest = dismiss, title = { Text("弹幕设置") }, text = { Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+    AppModal(title = "弹幕设置", dismiss = dismiss, primaryLabel = "完成", primary = dismiss) {
+      Column(Modifier.weight(1f, fill = false).verticalScroll(androidx.compose.foundation.rememberScrollState())) {
         SettingSwitch("显示弹幕", enabled, setEnabled)
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        Text("显示样式", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
         Text("透明度 ${(opacity * 100).toInt()}%", fontSize = 13.sp); Slider(opacity, setOpacity, valueRange = .2f..1f)
         ChoiceRow("字号", DanmakuFont.entries, font, setFont) { it.label }
         ChoiceRow("速度", DanmakuSpeed.entries, speed, setSpeed) { it.label }
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        Text("显示范围", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
         ChoiceRow("显示区域", DanmakuArea.entries, area, setArea) { it.label }
         Text("最大轨道 $lanes", fontSize = 13.sp); Slider(lanes.toFloat(), { setLanes(it.toInt()) }, valueRange = 2f..12f, steps = 9)
         SettingSwitch("滚动弹幕", scrolling, setScrolling); SettingSwitch("顶部弹幕", top, setTop); SettingSwitch("底部弹幕", bottom, setBottom)
-        HorizontalDivider(); Text(when { state.loading -> "诊断：正在加载"; state.error != null -> "诊断：${state.error}"; else -> "诊断：${if (state.value?.usedFallback == true) "备用" else "主"}源 · ${state.value?.items?.size ?: 0} 条${state.value?.lastError?.let { " · $it" }.orEmpty()}" }, Modifier.padding(top = 8.dp), fontSize = 12.sp)
+        HorizontalDivider(Modifier.padding(vertical = 8.dp)); Text(when { state.loading -> "弹幕正在加载"; state.error != null -> "弹幕加载失败：${state.error}"; else -> "已加载 ${state.value?.items?.size ?: 0} 条弹幕" }, Modifier.padding(top = 8.dp), fontSize = 12.sp, color = if (state.error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
         if (state.error != null || state.value?.genuineEmpty == true) TextButton(retry) { Text("重新加载弹幕") }
-    } }, confirmButton = { TextButton(dismiss) { Text("完成") } })
+      }
+    }
 }
 @Composable private fun SettingSwitch(label: String, checked: Boolean, change: (Boolean) -> Unit) { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text(label, Modifier.weight(1f)); Switch(checked, change) } }
 @Composable private fun <T> ChoiceRow(label: String, values: List<T>, selected: T, change: (T) -> Unit, text: (T) -> String) { Column { Text(label, fontSize = 13.sp); Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { values.forEach { FilterChip(it == selected, { change(it) }, { Text(text(it), fontSize = 11.sp) }) } } } }
@@ -299,23 +316,57 @@ internal fun LivePlayer(info: LivePlayInfo, headers: Map<String, String>, select
     var controls by remember { mutableStateOf(false) }; var playing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }; var qualityMenu by remember { mutableStateOf(false) }
     var fullscreen by rememberSaveable { mutableStateOf(false) }
-    val selected = info.default ?: return
-    val player = remember(selected.url) { ExoPlayer.Builder(context).build().apply {
+    var candidateIndex by remember(info) { mutableIntStateOf(0) }
+    val selected = info.qualities.getOrNull(candidateIndex) ?: info.default ?: return
+    val player = remember(selected.url) {
+        val loadControl = DefaultLoadControl.Builder().setBufferDurationsMs(5_000, 15_000, 1_000, 2_000).build()
+        ExoPlayer.Builder(context).setLoadControl(loadControl)
+            .setLivePlaybackSpeedControl(DefaultLivePlaybackSpeedControl.Builder()
+                .setFallbackMinPlaybackSpeed(.97f).setFallbackMaxPlaybackSpeed(1.05f).build())
+            .build().apply {
         val factory = DefaultHttpDataSource.Factory().setDefaultRequestProperties(headers)
+        val mediaItem = MediaItem.Builder().setUri(selected.url)
+            .setMimeType(if (selected.hls) MimeTypes.APPLICATION_M3U8 else MimeTypes.VIDEO_MP4)
+            .setLiveConfiguration(MediaItem.LiveConfiguration.Builder()
+                .setTargetOffsetMs(5_000).setMinOffsetMs(2_000).setMaxOffsetMs(15_000)
+                .setMinPlaybackSpeed(.97f).setMaxPlaybackSpeed(1.05f).build())
+            .build()
         val source = if (selected.hls) {
-            HlsMediaSource.Factory(factory).createMediaSource(MediaItem.Builder().setUri(selected.url).setMimeType(MimeTypes.APPLICATION_M3U8).build())
+            HlsMediaSource.Factory(factory).setAllowChunklessPreparation(true).createMediaSource(mediaItem)
         } else {
-            ProgressiveMediaSource.Factory(factory).createMediaSource(MediaItem.Builder().setUri(selected.url).setMimeType(MimeTypes.VIDEO_MP4).build())
+            ProgressiveMediaSource.Factory(factory).createMediaSource(mediaItem)
         }
         setMediaSource(source); prepare(); playWhenReady = true
     } }
-    DisposableEffect(player) { val listener = object : Player.Listener { override fun onIsPlayingChanged(value: Boolean) { playing = value }; override fun onPlayerError(value: PlaybackException) { error = "直播播放失败" } }; player.addListener(listener); onDispose { player.removeListener(listener); player.release() } }
+    DisposableEffect(player) { val listener = object : Player.Listener {
+        override fun onIsPlayingChanged(value: Boolean) { playing = value }
+        override fun onPlayerError(value: PlaybackException) {
+            if (value.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                player.seekToDefaultPosition(); player.prepare(); player.play(); return
+            }
+            if (candidateIndex + 1 < info.qualities.size) candidateIndex++ else error = "直播线路连接失败，请重试"
+        }
+    }; player.addListener(listener); onDispose { player.removeListener(listener); player.release() } }
+    LaunchedEffect(player) {
+        var previous = -1L; var stalled = 0
+        while (true) {
+            delay(5_000)
+            val current = player.currentPosition
+            stalled = if (player.playWhenReady && current <= previous + 200) stalled + 1 else 0
+            previous = current
+            if (stalled >= 2) {
+                player.seekToDefaultPosition(); player.prepare(); player.play(); delay(5_000)
+                if (player.currentPosition <= previous + 200 && candidateIndex + 1 < info.qualities.size) candidateIndex++
+                stalled = 0
+            }
+        }
+    }
     LaunchedEffect(controls, playing) { if (controls && playing) { delay(2_500); controls = false } }
     val content: @Composable () -> Unit = { Box(Modifier.fillMaxSize().background(Color.Black).clickable { controls = !controls }) {
         AndroidView({ PlayerView(it).apply { this.player = player; useController = false } }, Modifier.fillMaxSize(), onRelease = { it.player = null })
         AnimatedVisibility(controls, enter = fadeIn(), exit = fadeOut()) { Box(Modifier.fillMaxSize()) {
             FilledIconButton({ if (playing) player.pause() else player.play() }, Modifier.align(Alignment.Center).size(48.dp)) { Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, if (playing) "暂停直播" else "播放直播") }
-            Row(Modifier.align(Alignment.BottomEnd).padding(6.dp), verticalAlignment = Alignment.CenterVertically) { Box { TextButton({ qualityMenu = true }) { Text(selected.name, color = Color.White) }; DropdownMenu(qualityMenu, { qualityMenu = false }) { info.qualities.forEach { q -> DropdownMenuItem({ Text(q.name) }, { qualityMenu = false; selectQuality(q.quality) }) } } }; IconButton({ fullscreen = true }) { Icon(Icons.Default.Fullscreen, "直播全屏", tint = Color.White) } }
+            Row(Modifier.align(Alignment.BottomEnd).padding(6.dp), verticalAlignment = Alignment.CenterVertically) { Box { TextButton({ qualityMenu = true }) { Text("${selected.name} · ${selected.format}", color = Color.White) }; DropdownMenu(qualityMenu, { qualityMenu = false }) { info.qualities.distinctBy { it.quality }.forEach { q -> DropdownMenuItem({ Text(q.name) }, { qualityMenu = false; selectQuality(q.quality) }) } } }; IconButton({ fullscreen = true }) { Icon(Icons.Default.Fullscreen, "直播全屏", tint = Color.White) } }
         } }
         error?.let { Surface(Modifier.align(Alignment.Center), color = Color.Black.copy(.8f), shape = RoundedCornerShape(12.dp)) { Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) { Text(it, color = Color.White); TextButton({ error = null; player.prepare(); player.play() }) { Text("重试") } } } }
     } }

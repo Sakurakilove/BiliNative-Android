@@ -201,7 +201,10 @@ data class LiveRoomDetail(
     val roomId: Long, val title: String, val cover: String, val userName: String,
     val areaName: String, val online: Long
 )
-data class LiveQuality(val quality: Int, val name: String, val url: String, val hls: Boolean = false)
+data class LiveQuality(
+    val quality: Int, val name: String, val url: String,
+    val format: String = "ts", val hls: Boolean = true
+)
 data class LivePlayInfo(val qualities: List<LiveQuality>) {
     val default: LiveQuality? get() = qualities.firstOrNull()
 }

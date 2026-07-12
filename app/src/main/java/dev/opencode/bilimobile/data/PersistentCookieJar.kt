@@ -39,8 +39,9 @@ class PersistentCookieJar(context: Context) : CookieJar {
                 preferences.edit().remove(key).apply()
             } else {
                 this.cookies[key] = cookie
-                if (cookie.persistent) preferences.edit().putString(key, json.encodeToString(StoredCookie(cookie))).apply()
-                else preferences.edit().remove(key).apply()
+                // Bilibili uses several session cookies during login and risk checks. Keep
+                // them encrypted across process restarts instead of silently losing auth.
+                preferences.edit().putString(key, json.encodeToString(StoredCookie(cookie))).apply()
             }
         }
     }
