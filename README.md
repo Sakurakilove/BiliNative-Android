@@ -1,36 +1,85 @@
-# Bili Mobile Android Phase 6
+# BiliNative · 第三方 Bilibili 安卓客户端
 
-Native Android client built with Kotlin, Jetpack Compose Material 3, OkHttp, Media3, Coil, and ZXing.
+一个使用 Kotlin + Jetpack Compose（Material 3）开发的**非官方** Bilibili 安卓客户端。采用原生渲染、无私有后端，所有账号数据仅在本机加密存储，直接对接 Bilibili 公开网页接口。
 
-## Run
+> ⚠️ 本项目仅供个人学习、技术研究与交流使用，与哔哩哔哩官方无任何隶属或合作关系。详见文末[法律声明](#法律声明)。
 
-1. Open this directory in Android Studio with JDK 17.
-2. Install Android SDK 35 when prompted.
-3. Run the `app` configuration on an API 26+ device or emulator.
+---
 
-GitHub Actions uses Gradle 8.9 to run `lintDebug assembleDebug` and publishes the debug APK as an artifact.
+## 特性
 
-## Phase 6 behavior
+- **视频播放**：基于 Media3 (ExoPlayer) 的流媒体播放，支持清晰度切换、进度控制与帧同步弹幕渲染。
+- **弹幕系统**：远程弹幕（官方 XML 接口，自动 GZIP/DEFLATE 解压与多域名容错）+ 本地弹幕；可持久化开关、透明度、字号、速度、显示区域与模式过滤。
+- **直播**：Media3 HLS(AVC) 播放、清晰度选择、弹幕轮询（标注为"近期弹幕"）、登录后发送弹幕（本地乐观回显 + 服务端确认）。
+- **登录**：默认二维码登录；实验性的 +86 短信登录（内嵌 Geetest 验证 WebView，号码与验证码不持久化）。
+- **首页推荐**：边缘到边的紧凑信息流，稳定使用公开 popular 接口，支持下拉刷新（真实翻页）。
+- **动态**：登录后动态流（Polymer 异构接口），支持下拉刷新，自动忽略不支持的卡片类型。
+- **搜索**：顶层搜索页，含热搜榜、本地搜索历史（可清除）与运行时 WBI 签名。
+- **UP 主空间**：进入 UP 主资料与投稿列表（WBI 签名接口）。
+- **互动**：点赞、投币（明确不可逆成本提示）、收藏（按分组的成员关系追踪）、稍后再看，状态隔离且失败可重试。
+- **观看历史**：通过心跳上报与 Bilibili 服务端同步观看进度。
+- **隐私卡片**：明确说明设备直连 Bilibili、本地加密 Cookie 与播放进度、登出清除凭证。
+- **Material 3 主题**：统一字体/形状令牌、浅色与深色双主题、扁平化层级与 48dp 触控。
 
-- Compact edge-to-edge home with a stable popular recommendation baseline, correctly decoded region rankings, dense image-first cards, loading skeletons, retained content on refresh failures, and three state-retaining tabs. 推荐 and 热门 remain separately labeled even when both use the reliable popular feed.
-- Search is an integrated top-level destination. Logged-in dynamic video posts use the heterogeneous Polymer feed endpoint and safely ignore unsupported card types.
-- VOD controls start hidden while playing, auto-hide after 2.5 seconds, use compact center controls and two narrow translucent bottom rows, and keep playback errors in a centered retry card. Danmaku settings persist master visibility, opacity, size, speed, area, lane density, and mode filters.
-- Danmaku tries both official XML hosts, caps and sorts safe modes 1-5, distinguishes a genuine empty result from dual failure, and exposes source diagnostics only in settings. Bounded binary-window rendering allocates lanes and reserves the control area. Confirmed sends and comments are pinned locally while server indexing catches up.
-- Home and dynamic support Material 3 pull-to-refresh; dynamic entry refreshes only after 60 seconds. Account destinations use specific refresh jobs instead of refreshing the entire profile. Detail sharing always emits the canonical `bilibili.com/video/{bvid}` URL.
-- 直播 is a separate home source and room-ID destination. It uses defensively parsed room/play APIs, Media3 HLS AVC playback, quality selection, and bounded `gethistory` polling clearly labeled as recent danmaku. Logged-in sends are explicit and never automatically retried after an ambiguous result.
-- The launcher icon is an original vector approximation: a blue/cyan gradient with a white lowercase-b/play mark, adaptive/round/monochrome-capable on supported Android versions and vector-backed on API 26.
-- Like, coin, watch-later, and favorite status requests are isolated and unavailable actions stay disabled with retry feedback. Coin confirmation clearly identifies irreversible real cost. Favorite membership remains tracked per folder and status reloads after writes.
-- Profile history, watch-later, favorite folders, and guarded paged folder contents are independent destinations whose primitive route fields survive rotation. QR remains the default reliable login and uses its creation time for expiry guidance.
-- Experimental mainland (+86, internal `cid=1`) SMS login is available behind an explicit entry. It uses an ephemeral host-restricted in-app Geetest v3 WebView; Geetest resources are third-party network requests. Only unsupported captcha/risk-control failures direct users to QR, while correctable failures preserve SMS context. Phone numbers and codes are never persisted.
-- A visible privacy card explains direct device-to-Bilibili traffic, local encrypted cookies and playback positions, credential removal on logout, and the unofficial undocumented-API limitation.
-- Search signs requests from runtime WBI navigation keys. No app credentials, official keys, secrets, trademarks, or bundled copyrighted assets are included.
+---
 
-## Caveats
+## 技术栈
 
-- This is an unofficial client and is not affiliated with Bilibili. It depends on undocumented public web APIs whose schemas and anti-bot requirements can change.
-- Playback availability and quality depend on account rights, region, and the server response. DRM streams are unsupported.
-- The recommendation baseline intentionally uses the public popular endpoint because the anonymous personalization endpoint is currently unstable. Home categories are cached independently in memory and retain their own content on refresh failure; account sections have no durable offline database cache.
-- Live chat is polling, not websocket real time; badges, gifts, super chat, room moderation, and non-AVC/non-HLS fallbacks are deferred. Protobuf VOD segments are intentionally not included because this build has no generated protobuf schema.
-- Picture-in-picture, uploader space browsing, gesture brightness/volume, cache clearing, nested reply posting, and password login are intentionally deferred. The experimental undocumented SMS API may stop working; the app never collects a password, auto-solves, or bypasses Geetest.
-- Video images use Coil's system-managed memory/disk cache. Captcha WebViews are destroyed and their cache/history are cleared on disposal on a best-effort basis; they do not receive cookie values through JavaScript.
-- Cleartext traffic is disabled. Persistent cookies are encrypted at rest; session cookies remain memory-only according to cookie semantics. Both are removed on sign-out.
+| 模块 | 技术 |
+| --- | --- |
+| 语言 | Kotlin |
+| UI | Jetpack Compose · Material 3 |
+| 网络 | OkHttp（全局拦截器、WBI 签名、本地加密 CookieJar） |
+| 播放 | Media3 (ExoPlayer) · HLS |
+| 图片 | Coil |
+| 二维码 | ZXing |
+| 最低 / 目标 | minSdk 26 / targetSdk 35 |
+| 版本 | 0.2.0（versionCode 2） |
+
+---
+
+## 构建与运行
+
+1. 使用 Android Studio（JDK 17）打开本目录。
+2. 按提示安装 Android SDK 35。
+3. 在 API 26+ 设备或模拟器上运行 `app` 配置。
+
+也可通过 **GitHub Actions** 自动构建：工作流使用 Gradle 8.9 执行 `lintDebug assembleDebug`，并将 Debug APK 作为构建产物发布。
+
+---
+
+## 隐私与安全
+
+- 应用不内置任何私有服务器，所有流量为**设备直连 Bilibili**。
+- 登录凭证（Cookie）使用 `EncryptedSharedPreferences` 加密存储于本机；会话 Cookie 仅驻留内存，登出时全部清除。
+- 明文流量（cleartext）已禁用。
+- 应用不含任何官方密钥、密钥材料、商标或捆绑的受版权保护资源。
+- 搜索请求在运行时使用 WBI 导航密钥签名；短信登录的号码与验证码不在任何位置持久化。
+
+---
+
+## 已知限制
+
+- 依赖未公开文档的网页接口，其字段与反爬策略可能随时变化。
+- 推荐流有意使用公开 popular 接口（匿名个性化接口当前不稳定）。
+- 直播弹幕为轮询而非 WebSocket 实时；勋章、礼物、Super Chat、房管及非 AVC/HLS 回退暂未支持。
+- 画中画、亮度/音量手势、缓存清理、嵌套回复发布、密码登录等暂未实现。
+- 实验性短信登录接口可能随时失效；应用绝不收集密码、自动破解或绕过验证码。
+
+---
+
+## 法律声明
+
+1. **非官方声明**：本项目是一个由个人开发者出于学习目的开发的非官方第三方客户端，**与哔哩哔哩（Bilibili）官方及其关联公司无任何隶属、合作、授权或赞助关系**。
+2. **用途限制**：本项目**仅供个人学习、技术研究与非商业性的个人使用**。严禁用于任何商业用途、大规模分发、盈利或违反 Bilibili 用户协议的行为。
+3. **接口与数据**：本应用通过 Bilibili 公开的网页接口（部分未公开文档）获取数据，相关接口的可用性、格式及访问限制由 Bilibili 单方决定，可能因反爬或业务调整而失效。使用者须自行承担由此带来的风险。
+4. **数据与隐私**：应用不在本机之外的任何服务器上存储或上传你的账号信息；所有登录凭证均加密保存在你自己的设备上，并在登出时清除。开发者无法也无意获取你的任何个人数据。
+5. **知识产权**：Bilibili、哔哩哔哩及其相关商标、Logo、视频、封面、弹幕等内容的知识产权均归原权利人所有。本项目不捆绑或再分发任何受版权保护的资源，图标为原创矢量近似。
+6. **免责条款**：使用本软件所产生的一切后果（包括但不限于账号风险、区域限制、接口失效、数据丢失）由使用者自行承担。开发者不对因使用本项目导致的任何直接或间接损失负责。
+7. **停止与移除**：若权利方或相关方提出异议，开发者将配合下架或停止相关功能。
+
+---
+
+## 许可证
+
+本项目以 [MIT 许可证](./LICENSE) 开源（如有）。
