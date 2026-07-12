@@ -15,4 +15,5 @@
     <string name="api_disclaimer">非官方客户端。内容来自公开 Web API，接口可能随时变更。</string>
     <string name="danmaku">弹幕</string><string name="fullscreen">切换全屏</string><string name="settings_about">设置与关于</string>
     <string name="danmaku_short">弹</string><string name="danmaku_opacity">弹幕透明度 %1$d%%</string><string name="enter_fullscreen">进入全屏</string>
+    <string name="play">播放</string><string name="pause">暂停</string><string name="rewind_10">后退 10 秒</string><string name="forward_10">前进 10 秒</string>
 </resources>

@@ -83,6 +83,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var currentAid = 0L
     private var currentBvid = ""
     private var currentCid = 0L
+    private val channelCache = mutableMapOf<Channel, List<Video>>()
+    private val fallbackAttempts = mutableSetOf<Pair<String, Long>>()
 
     init {
         refreshPopular()
@@ -93,14 +95,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         channelJob?.cancel()
         val selected = _channel.value
         channelJob = viewModelScope.launch {
-        _popular.value = ContentState(value = _popular.value.value, loading = true)
+        _popular.value = ContentState(value = channelCache[selected], loading = true)
         try {
             val result = repository.channel(selected)
+            channelCache[selected] = result
             if (_channel.value == selected) _popular.value = ContentState(value = result)
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
-            if (_channel.value == selected) _popular.value = ContentState(error = error.userMessage())
+            if (_channel.value == selected) _popular.value = ContentState(value = channelCache[selected], error = error.userMessage())
         }
         }
     }
@@ -108,6 +111,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun selectChannel(value: Channel) {
         if (_channel.value == value) return
         _channel.value = value
+        _popular.value = ContentState(value = channelCache[value], loading = true)
         refreshPopular()
     }
 
@@ -117,7 +121,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _dynamics.value = ContentState(value = _dynamics.value.value, loading = true)
         try { _dynamics.value = ContentState(repository.dynamics()) }
         catch (error: CancellationException) { throw error }
-        catch (error: Throwable) { _dynamics.value = ContentState(error = error.userMessage()) }
+        catch (error: Throwable) { _dynamics.value = ContentState(value = _dynamics.value.value, error = error.userMessage()) }
         }
     }
 
@@ -201,7 +205,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun loadInteraction(aid: Long) {
+    fun loadInteraction(aid: Long = currentAid) {
         interactionJob?.cancel()
         val request = detailsRequest
         interactionJob = viewModelScope.launch {
@@ -211,12 +215,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun toggleLike(aid: Long) = updateInteraction { state -> repository.setLike(aid, !state.liked); state.copy(liked = !state.liked) }
-    fun toggleWatchLater(aid: Long) = updateInteraction { state -> repository.setWatchLater(aid, !state.watchLater); state.copy(watchLater = !state.watchLater) }
-    fun toggleFavorite(aid: Long) = updateInteraction { state ->
-        val folder = _favorites.value.value.orEmpty().firstOrNull { it.title == "默认收藏夹" }
-            ?: error("未找到默认收藏夹，请先在官方客户端创建或命名默认收藏夹")
-        repository.setFavorite(aid, folder.id, !state.favorite); state.copy(favorite = !state.favorite)
+    fun toggleLike(aid: Long) = updateInteraction { state -> val current = state.liked ?: return@updateInteraction state; repository.setLike(aid, !current); repository.interaction(aid) }
+    fun toggleWatchLater(aid: Long) = updateInteraction { state -> val current = state.watchLater ?: return@updateInteraction state; repository.setWatchLater(aid, !current); repository.interaction(aid) }
+    fun toggleFavorite(aid: Long, folderId: Long) = updateInteraction { state ->
+        val folders = state.favoriteFolderIds ?: return@updateInteraction state
+        repository.setFavorite(aid, folderId, folderId !in folders); repository.interaction(aid)
     }
 
     private fun updateInteraction(action: suspend (InteractionState) -> InteractionState) {
@@ -231,12 +234,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun loadStream(bvid: String, cid: Long, quality: Int = 64) {
+    fun loadStream(bvid: String, cid: Long, quality: Int = 64, forceDash: Boolean = false, resetFallback: Boolean = true) {
         if (bvid != currentBvid) return
         playJob?.cancel()
         val request = ++playRequest
         val detailRequest = detailsRequest
         currentCid = cid
+        if (resetFallback) fallbackAttempts.remove(bvid to cid)
         playJob = viewModelScope.launch {
             if (cid == 0L) {
                 _playUrl.value = ContentState(error = "当前分集无法播放")
@@ -244,7 +248,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             _playUrl.value = ContentState(loading = true)
             try {
-                val url = repository.playUrl(bvid, cid, quality)
+                val url = repository.playUrl(bvid, cid, quality, forceDash)
                 if (request == playRequest && detailRequest == detailsRequest && bvid == currentBvid && cid == currentCid) _playUrl.value = ContentState(value = url)
             } catch (error: CancellationException) {
                 throw error
@@ -252,6 +256,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (request == playRequest && detailRequest == detailsRequest && bvid == currentBvid && cid == currentCid) _playUrl.value = ContentState(error = error.userMessage())
             }
         }
+    }
+
+    fun fallbackStream(bvid: String, cid: Long, quality: Int, failedDash: Boolean) {
+        if (!fallbackAttempts.add(bvid to cid)) return
+        loadStream(bvid, cid, if (failedDash) minOf(quality, 64) else quality, forceDash = !failedDash, resetFallback = false)
     }
 
     private fun loadRelated(bvid: String) {
@@ -309,8 +318,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             catch (error: Throwable) { target.value = ContentState(error = error.userMessage()) }
         }
         accountJobs += load(_history) { repository.history() }
-        accountJobs += load(_watchLater) { repository.watchLater() }
+        accountJobs += load(_watchLater) { repository.watchLaterPreview() }
         accountJobs += load(_favorites) { repository.favoriteFolders(mid) }
+    }
+
+    fun refreshFavorites() {
+        val mid = _profile.value.value?.takeIf(NavData::isLogin)?.mid ?: return
+        accountJobs += viewModelScope.launch {
+            _favorites.value = ContentState(value = _favorites.value.value, loading = true)
+            try { _favorites.value = ContentState(repository.favoriteFolders(mid)) }
+            catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { _favorites.value = ContentState(value = _favorites.value.value, error = error.userMessage()) }
+        }
     }
 
     fun beginLogin() {

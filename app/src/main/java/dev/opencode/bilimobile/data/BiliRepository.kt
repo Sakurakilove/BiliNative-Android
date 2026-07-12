@@ -37,11 +37,11 @@ class BiliRepository(context: Context) {
 
     suspend fun channel(channel: Channel): List<Video> {
         if (channel.popular) return popular()
-        if (channel.tid == null) return get<ApiResponse<RecommendData>>(
-            "https://api.bilibili.com/x/web-interface/index/top/rcmd?fresh_type=3&ps=30"
-        ).requireData().item.filter { it.isPlayable }
-        return get<ApiResponse<List<Video>>>("https://api.bilibili.com/x/web-interface/ranking/v2?rid=${channel.tid}&type=all")
-            .requireData().filter { it.isPlayable }
+        // The anonymous recommendation endpoint frequently rejects otherwise valid requests.
+        // Popular is a stable, non-empty recommendation baseline with a distinct UI label.
+        if (channel.tid == null) return popular()
+        return get<ApiResponse<RankingData>>("https://api.bilibili.com/x/web-interface/ranking/v2?rid=${channel.tid}&type=all")
+            .requireData().list.filter { it.isPlayable }
     }
 
     suspend fun dynamics(): List<DynamicVideo> {
@@ -65,7 +65,8 @@ class BiliRepository(context: Context) {
                         author = author?.get("name")?.jsonPrimitive?.contentOrNull.orEmpty(),
                         play = stat?.get("play")?.jsonPrimitive?.contentOrNull.parseCount()),
                     archive["desc"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-                    author?.get("pub_time")?.jsonPrimitive?.contentOrNull.orEmpty()
+                    author?.get("pub_time")?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    author?.get("face")?.jsonPrimitive?.contentOrNull.orEmpty()
                 )
             }.getOrNull()
         }
@@ -120,14 +121,16 @@ class BiliRepository(context: Context) {
     ).requireData().list
 
     suspend fun watchLater(): List<Video> = get<ApiResponse<WatchLaterData>>(
-        "https://api.bilibili.com/x/v2/history/toview?ps=12&pn=1"
+        "https://api.bilibili.com/x/v2/history/toview"
     ).requireData().list.filter { it.bvid.isNotBlank() }
+
+    suspend fun watchLaterPreview(): List<Video> = watchLater().take(12)
 
     suspend fun favoriteFolders(mid: Long): List<FavoriteFolder> = get<ApiResponse<FavoriteData>>(
         "https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=$mid"
     ).requireData().list
 
-    suspend fun playUrl(bvid: String, cid: Long, quality: Int = 64): PlayResult {
+    suspend fun playUrl(bvid: String, cid: Long, quality: Int = 64, forceDash: Boolean = false): PlayResult {
         fun requestUrl(fnval: String, platform: String? = null) = "https://api.bilibili.com/x/player/playurl".toHttpUrl().newBuilder()
             .addQueryParameter("bvid", bvid).addQueryParameter("cid", cid.toString())
             .addQueryParameter("qn", quality.toString()).addQueryParameter("fnval", fnval)
@@ -137,29 +140,36 @@ class BiliRepository(context: Context) {
             segment.url.ifBlank { segment.backup_url.firstOrNull().orEmpty() }.takeIf(String::isNotBlank)
         }
 
+        fun PlayData.labels() = accept_quality.zip(accept_description).toMap()
+        if (!forceDash && quality <= 64) {
+            val progressive = runCatching { get<ApiResponse<PlayData>>(requestUrl("0", "html5")).requireData() }.getOrNull()
+            val urls = progressive?.urls().orEmpty()
+            if (urls.isNotEmpty()) return PlayResult(urls, null, progressive!!.quality, progressive.accept_quality, progressive.labels())
+        }
         val dash = get<ApiResponse<PlayData>>(requestUrl("16")).requireData()
         val video = dash.dash?.video?.filter { it.id <= quality && it.url.isNotBlank() }?.maxByOrNull { it.id }
             ?: dash.dash?.video?.filter { it.url.isNotBlank() }?.minByOrNull { it.id }
         val audio = dash.dash?.audio?.filter { it.url.isNotBlank() }?.maxByOrNull { it.bandwidth }
-        if (video != null) return PlayResult(listOf(video.url), audio?.url, video.id, dash.accept_quality, dash.accept_description)
+        if (video != null) return PlayResult(listOf(video.url), audio?.url, video.id, dash.accept_quality, dash.labels(), isDash = true)
         val html5 = get<ApiResponse<PlayData>>(requestUrl("0", "html5")).requireData()
         val urls = html5.urls()
-        if (urls.isNotEmpty()) return PlayResult(urls, null, html5.quality, html5.accept_quality, html5.accept_description)
+        if (urls.isNotEmpty()) return PlayResult(urls, null, html5.quality, html5.accept_quality, html5.labels())
         // Some videos reject the HTML5 hint but still expose a progressive default response.
         val fallback = get<ApiResponse<PlayData>>(requestUrl("0")).requireData()
         return PlayResult(
             fallback.urls().ifEmpty { error("当前视频没有可用的播放地址") }, null,
-            fallback.quality, fallback.accept_quality, fallback.accept_description
+            fallback.quality, fallback.accept_quality, fallback.labels()
         )
     }
 
     suspend fun interaction(aid: Long): InteractionState {
-        val liked = get<ApiResponse<Int>>("https://api.bilibili.com/x/web-interface/archive/has/like?aid=$aid").data == 1
-        val laterValue = get<ApiResponse<JsonElement>>("https://api.bilibili.com/x/v2/history/toview/has?aid=$aid").data
-        val later = laterValue?.jsonPrimitive?.contentOrNull in setOf("1", "true")
-        val fav = get<ApiResponse<JsonElement>>("https://api.bilibili.com/x/v3/fav/folder/created/list-all?rid=$aid&type=2").data
-            ?.jsonObject?.get("list")?.jsonArray?.any { it.jsonObject["fav_state"]?.jsonPrimitive?.contentOrNull == "1" } == true
-        return InteractionState(liked, later, fav)
+        val liked = runCatching { get<ApiResponse<Int>>("https://api.bilibili.com/x/web-interface/archive/has/like?aid=$aid").data == 1 }.getOrNull()
+        val later = runCatching { watchLater().any { it.aid == aid } }.getOrNull()
+        val folders = runCatching {
+            get<ApiResponse<FavoriteData>>("https://api.bilibili.com/x/v3/fav/folder/created/list-all?rid=$aid&type=2")
+                .requireData().list.filter(FavoriteFolder::isFavorite).map(FavoriteFolder::id).toSet()
+        }.getOrNull()
+        return InteractionState(liked, later, folders)
     }
 
     suspend fun setLike(aid: Long, add: Boolean) = post("https://api.bilibili.com/x/web-interface/archive/like",

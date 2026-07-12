@@ -9,6 +9,7 @@ data class ApiResponse<T>(val code: Int = -1, val message: String = "", val data
 @Serializable
 data class PopularData(val list: List<Video> = emptyList())
 @Serializable data class RecommendData(val item: List<Video> = emptyList())
+@Serializable data class RankingData(val list: List<Video> = emptyList())
 
 @Serializable
 data class SearchData(val result: List<SearchVideo> = emptyList())
@@ -136,14 +137,22 @@ sealed interface LoginState {
 
 @Serializable data class WatchLaterData(val list: List<Video> = emptyList(), val count: Int = 0)
 @Serializable data class FavoriteData(val list: List<FavoriteFolder> = emptyList(), val count: Int = 0)
-@Serializable data class FavoriteFolder(val id: Long = 0, val title: String = "", val media_count: Int = 0)
+@Serializable data class FavoriteFolder(
+    val id: Long = 0, val title: String = "", val media_count: Int = 0,
+    val fav_state: Int = 0
+) { val isFavorite: Boolean get() = fav_state == 1 }
 
 data class PlayResult(
     val videoUrls: List<String>, val audioUrl: String? = null, val quality: Int,
-    val availableQualities: List<Int>, val qualityLabels: List<String> = emptyList()
+    val availableQualities: List<Int>, val qualityLabels: Map<Int, String> = emptyMap(),
+    val isDash: Boolean = false
 ) { val videoUrl: String get() = videoUrls.first() }
 
 data class Channel(val title: String, val tid: Int? = null, val popular: Boolean = false)
-data class DynamicVideo(val id: String, val video: Video, val text: String = "", val time: String = "")
-data class InteractionState(val liked: Boolean = false, val watchLater: Boolean = false, val favorite: Boolean = false)
+data class DynamicVideo(val id: String, val video: Video, val text: String = "", val time: String = "", val avatar: String = "")
+data class InteractionState(
+    val liked: Boolean? = null,
+    val watchLater: Boolean? = null,
+    val favoriteFolderIds: Set<Long>? = null
+) { val favorite: Boolean? get() = favoriteFolderIds?.isNotEmpty() }
 data class Danmaku(val time: Float, val mode: Int, val color: Long, val text: String)
