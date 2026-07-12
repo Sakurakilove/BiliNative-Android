@@ -267,6 +267,7 @@ private data class PreviewItem(val title: String, val id: String, val image: Str
     }; view.loadDataWithBaseURL("https://passport.bilibili.com/", captchaHtml(parameters, attempt), "text/html", "UTF-8", null) } }, Modifier.fillMaxWidth().height(280.dp))
     DisposableEffect(attempt) { onDispose { bridge.invalidate(); webView?.apply { removeJavascriptInterface("CaptchaBridge"); stopLoading(); clearHistory(); clearCache(true); loadUrl("about:blank"); destroy() } } }
 }
+}
 
 private fun captchaHtml(value: CaptchaParameters, attempt: String) = """<!doctype html><meta name=viewport content='width=device-width'><div id=captcha></div><script src='https://static.geetest.com/static/tools/gt.js'></script><script>try{initGeetest({gt:${JSONObject.quote(value.gt)},challenge:${JSONObject.quote(value.challenge)},offline:false,new_captcha:true,product:'bind'},function(c){c.appendTo('#captcha');c.onSuccess(function(){var r=c.getValidate();CaptchaBridge.onSuccess(${JSONObject.quote(attempt)},r.geetest_validate,r.geetest_seccode)});c.onError(function(){CaptchaBridge.onFailure(${JSONObject.quote(attempt)})})})}catch(e){CaptchaBridge.onFailure(${JSONObject.quote(attempt)})}</script>"""
 
