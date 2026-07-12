@@ -20,6 +20,13 @@ import dev.opencode.bilimobile.data.AmbiguousWriteException
 import dev.opencode.bilimobile.data.ApiBusinessException
 import dev.opencode.bilimobile.data.CaptchaParameters
 import dev.opencode.bilimobile.data.SmsLoginState
+import dev.opencode.bilimobile.data.LiveRoomSummary
+import dev.opencode.bilimobile.data.LiveRoomDetail
+import dev.opencode.bilimobile.data.LivePlayInfo
+import dev.opencode.bilimobile.data.LiveMessage
+import dev.opencode.bilimobile.data.CommentMember
+import dev.opencode.bilimobile.data.CommentContent
+import dev.opencode.bilimobile.data.Danmaku
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -37,7 +44,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = BiliRepository(application)
     private val _popular = MutableStateFlow(ContentState<List<Video>>(loading = true))
     val popular = _popular.asStateFlow()
-    val channels = listOf(Channel("推荐"), Channel("热门", popular = true), Channel("动画", 1), Channel("游戏", 4), Channel("知识", 36), Channel("科技", 188), Channel("生活", 160))
+    val channels = listOf(Channel("推荐"), Channel("热门", popular = true), Channel("直播", live = true), Channel("动画", 1), Channel("游戏", 4), Channel("知识", 36), Channel("科技", 188), Channel("生活", 160))
     private val _channel = MutableStateFlow(channels.first())
     val channel = _channel.asStateFlow()
     private val _search = MutableStateFlow(ContentState<List<Video>>(value = emptyList()))
@@ -72,6 +79,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val commentPosting = _commentPosting.asStateFlow()
     private val _danmakuPosting = MutableStateFlow(ContentState<Unit>())
     val danmakuPosting = _danmakuPosting.asStateFlow()
+    private val _liveRooms = MutableStateFlow(ContentState<List<LiveRoomSummary>>())
+    val liveRooms = _liveRooms.asStateFlow()
+    private val _liveDetail = MutableStateFlow(ContentState<LiveRoomDetail>())
+    val liveDetail = _liveDetail.asStateFlow()
+    private val _livePlay = MutableStateFlow(ContentState<LivePlayInfo>())
+    val livePlay = _livePlay.asStateFlow()
+    private val _liveMessages = MutableStateFlow(ContentState<List<LiveMessage>>(value = emptyList()))
+    val liveMessages = _liveMessages.asStateFlow()
+    private val _livePosting = MutableStateFlow(ContentState<Unit>())
+    val livePosting = _livePosting.asStateFlow()
+    private val _pinnedOwnComment = MutableStateFlow<Comment?>(null)
+    val pinnedOwnComment = _pinnedOwnComment.asStateFlow()
     private val _login = MutableStateFlow<LoginState>(LoginState.Idle)
     val login = _login.asStateFlow()
     private val _smsLogin = MutableStateFlow<SmsLoginState>(SmsLoginState.Idle)
@@ -83,6 +102,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var playJob: Job? = null
     private var channelJob: Job? = null
     private var dynamicsJob: Job? = null
+    private var liveJob: Job? = null
     private var relatedJob: Job? = null
     private var commentsJob: Job? = null
     private var danmakuJob: Job? = null
@@ -110,6 +130,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val channelCache = mutableMapOf<Channel, List<Video>>()
     private val fallbackAttempts = mutableSetOf<Pair<String, Long>>()
     private var smsCooldownUntilMillis = 0L
+    private var dynamicsLoadedAt = 0L
+    private var localCommentId = -1L
+    private val localDanmaku = mutableMapOf<Long, MutableList<Danmaku>>()
 
     init {
         refreshPopular()
@@ -117,6 +140,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshPopular() {
+        if (_channel.value.live) { refreshLiveRooms(); return }
         channelJob?.cancel()
         val selected = _channel.value
         channelJob = viewModelScope.launch {
@@ -136,17 +160,60 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun selectChannel(value: Channel) {
         if (_channel.value == value) return
         _channel.value = value
-        _popular.value = ContentState(value = channelCache[value], loading = true)
+        _popular.value = ContentState(value = channelCache[value], loading = !value.live)
         refreshPopular()
+    }
+
+    fun refreshLiveRooms() {
+        liveJob?.cancel()
+        liveJob = viewModelScope.launch {
+            _liveRooms.value = _liveRooms.value.copy(loading = true, error = null)
+            try { _liveRooms.value = ContentState(repository.liveRooms()) }
+            catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { _liveRooms.value = _liveRooms.value.copy(loading = false, error = error.userMessage()) }
+        }
     }
 
     fun loadDynamics() {
         dynamicsJob?.cancel()
         dynamicsJob = viewModelScope.launch {
         _dynamics.value = ContentState(value = _dynamics.value.value, loading = true)
-        try { _dynamics.value = ContentState(repository.dynamics()) }
+        try { _dynamics.value = ContentState(repository.dynamics()); dynamicsLoadedAt = System.currentTimeMillis() }
         catch (error: CancellationException) { throw error }
         catch (error: Throwable) { _dynamics.value = ContentState(value = _dynamics.value.value, error = error.userMessage()) }
+        }
+    }
+
+    fun refreshDynamicsIfStale() { if (System.currentTimeMillis() - dynamicsLoadedAt > 60_000) loadDynamics() }
+
+    fun loadLiveRoom(roomId: Long, quality: Int = 0) {
+        liveJob?.cancel()
+        liveJob = viewModelScope.launch {
+            _liveDetail.value = ContentState(loading = true); _livePlay.value = ContentState(loading = true)
+            try {
+                val detail = repository.liveDetail(roomId)
+                _liveDetail.value = ContentState(detail)
+                _livePlay.value = ContentState(repository.livePlayInfo(detail.roomId, quality))
+                while (true) {
+                    runCatching { repository.liveHistory(detail.roomId) }.onSuccess { incoming ->
+                        val merged = (_liveMessages.value.value.orEmpty() + incoming).distinctBy { it.id }.takeLast(100)
+                        _liveMessages.value = ContentState(merged)
+                    }.onFailure { _liveMessages.value = _liveMessages.value.copy(error = it.userMessage()) }
+                    delay(4_000)
+                }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { _liveDetail.value = ContentState(error = error.userMessage()); _livePlay.value = ContentState(error = error.userMessage()) }
+        }
+    }
+
+    fun closeLiveRoom() { liveJob?.cancel(); _liveDetail.value = ContentState(); _livePlay.value = ContentState(); _liveMessages.value = ContentState(emptyList()); _livePosting.value = ContentState() }
+    fun sendLiveMessage(message: String, finished: (Boolean) -> Unit) {
+        val roomId = _liveDetail.value.value?.roomId ?: return
+        val text = message.trim().take(100); if (text.isBlank() || _livePosting.value.loading) return
+        viewModelScope.launch {
+            _livePosting.value = ContentState(loading = true)
+            try { repository.sendLiveMessage(roomId, text); _livePosting.value = ContentState(Unit); finished(true) }
+            catch (error: Throwable) { _livePosting.value = ContentState(error = if (error is AmbiguousWriteException) "发送结果未知，请勿重复发送" else error.userMessage()); finished(false) }
         }
     }
 
@@ -183,6 +250,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _danmaku.value = ContentState()
             _commentPosting.value = ContentState()
             _danmakuPosting.value = ContentState()
+            _pinnedOwnComment.value = null; localDanmaku.clear()
             try {
                 val video = repository.details(bvid)
                 if (request != detailsRequest) return@launch
@@ -210,7 +278,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val request = detailsRequest
         danmakuJob = viewModelScope.launch {
         if (cid <= 0) return@launch
-        try { val result = repository.danmaku(cid); if (request == detailsRequest && cid == currentCid) _danmaku.value = ContentState(result) }
+        try { val result = repository.danmaku(cid); if (request == detailsRequest && cid == currentCid) _danmaku.value = ContentState(result.copy(items = (result.items + (localDanmaku[cid] ?: emptyList())).distinctBy { Triple(it.time, it.mode, it.text) }.sortedBy { it.time })) }
         catch (error: CancellationException) { throw error }
         catch (error: Throwable) { if (request == detailsRequest && cid == currentCid) _danmaku.value = ContentState(error = error.userMessage()) }
         }
@@ -260,7 +328,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _commentPosting.value = ContentState(loading = true)
             try {
                 repository.postComment(aid, normalized)
-                if (request == detailsRequest && aid == currentAid) { _commentPosting.value = ContentState(Unit); loadComments(reset = true); finished(true) }
+                if (request == detailsRequest && aid == currentAid) {
+                    val user = _profile.value.value
+                    _pinnedOwnComment.value = Comment(localCommentId--, System.currentTimeMillis() / 1000, member = CommentMember(user?.mid.toString(), user?.uname.orEmpty(), user?.face.orEmpty()), content = CommentContent(normalized))
+                    _commentPosting.value = ContentState(Unit); loadComments(reset = true); finished(true)
+                }
             } catch (error: CancellationException) { throw error }
             catch (error: Throwable) { if (request == detailsRequest && aid == currentAid) { if (error is AmbiguousWriteException) blockedCommentDetail = request; _commentPosting.value = ContentState(error = if (error is AmbiguousWriteException) "可能已发送，请刷新确认，勿重复发送" else error.userMessage()); finished(false) } }
         }
@@ -274,7 +346,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _danmakuPosting.value = ContentState(loading = true)
             try {
                 repository.postDanmaku(cid, currentBvid, currentAid, normalized, progress)
-                if (request == detailsRequest && cid == currentCid) { _danmakuPosting.value = ContentState(Unit); loadDanmaku(cid); finished(true) }
+                if (request == detailsRequest && cid == currentCid) { localDanmaku.getOrPut(cid) { mutableListOf() } += Danmaku(progress / 1000f, 1, 0xffffff, normalized); _danmakuPosting.value = ContentState(Unit); loadDanmaku(cid); finished(true) }
             } catch (error: CancellationException) { throw error }
             catch (error: Throwable) { if (request == detailsRequest && cid == currentCid) { if (error is AmbiguousWriteException) blockedDanmakuDetail = request; _danmakuPosting.value = ContentState(error = if (error is AmbiguousWriteException) "可能已发送，请刷新确认，勿重复发送" else error.userMessage()); finished(false) } }
         }
@@ -350,8 +422,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         try {
             val result = repository.comments(aid, page).replies.orEmpty()
             if (request != detailsRequest || aid != currentAid) return@launch
+            val own = _pinnedOwnComment.value
+            if (own != null && result.any { it.member.mid == own.member.mid && it.content.message == own.content.message }) _pinnedOwnComment.value = null
             val existing = if (reset) emptyList() else _comments.value.value.orEmpty()
-            _comments.value = ContentState(value = existing + result)
+            _comments.value = ContentState(value = (existing + result).distinctBy { it.rpid })
             commentPage = page
         } catch (error: CancellationException) { throw error }
         catch (error: Throwable) { if (request == detailsRequest && aid == currentAid) _comments.value = _comments.value.copy(loading = false, error = error.userMessage()) }
@@ -366,7 +440,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val profile = repository.profile()
             _profile.value = ContentState(value = profile)
             if (profile.isLogin) loadProfileSections(profile.mid)
-            if (profile.isLogin) loadDynamics()
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
@@ -395,6 +468,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             catch (error: CancellationException) { throw error }
             catch (error: Throwable) { _favorites.value = ContentState(value = _favorites.value.value, error = error.userMessage()) }
         }
+    }
+
+    fun refreshHistory() = refreshAccount(_history) { repository.history() }
+    fun refreshWatchLater() = refreshAccount(_watchLater) { repository.watchLater() }
+    private fun <T> refreshAccount(target: MutableStateFlow<ContentState<List<T>>>, block: suspend () -> List<T>) {
+        accountJobs.forEach { it.cancel() }; accountJobs.clear()
+        accountJobs += viewModelScope.launch { target.value = target.value.copy(loading = true, error = null); try { target.value = ContentState(block()) } catch (error: CancellationException) { throw error } catch (error: Throwable) { target.value = target.value.copy(loading = false, error = error.userMessage()) } }
     }
 
     fun loadFavoriteResources(mediaId: Long, reset: Boolean = false) {
@@ -524,6 +604,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _interaction.value = ContentState()
         _replies.value = emptyMap()
         _danmaku.value = ContentState()
+        _pinnedOwnComment.value = null; localDanmaku.clear(); closeLiveRoom()
         _favoriteResources.value = ContentState(); _commentPosting.value = ContentState(); _danmakuPosting.value = ContentState()
         favoritePage = 0; favoriteMediaId = 0; _favoriteHasMore.value = true; blockedCommentDetail = -1; blockedDanmakuDetail = -1
         _profile.value = ContentState(loading = true)

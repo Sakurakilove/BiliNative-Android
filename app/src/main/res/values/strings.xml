@@ -24,4 +24,5 @@
     <string name="privacy_statement">内容与账号请求由设备直接发送至哔哩哔哩官方域名或 CDN；实验性短信登录会向第三方 Geetest 极验域名请求验证码资源。持久登录 Cookie 加密存储在本机，会话 Cookie 仅保留在内存；播放位置保存在本机；视频图片使用 Coil 的内存和磁盘缓存。验证码 WebView 关闭时会尽力清除缓存与历史。退出登录会清除本地登录凭据。本应用为非官方应用，所依赖的未公开 Web API 可能随时变更。</string>
     <string name="qr_countdown">二维码约 %1$d 秒后过期</string><string name="regenerate_qr">重新生成二维码</string><string name="open_qr_browser">在浏览器打开（第二台设备/模拟器）</string>
     <string name="login_integration_note">不收集密码。支持二维码授权及实验性中国大陆短信登录；短信接口和验证码流程可能随时失效。</string>
+    <string name="live">直播</string><string name="recent_live_danmaku">近期弹幕（约每 4 秒更新）</string><string name="share_video">分享视频</string><string name="danmaku_settings">弹幕设置</string>
 </resources>

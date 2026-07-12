@@ -179,7 +179,7 @@ data class PlayResult(
     val isDash: Boolean = false
 ) { val videoUrl: String get() = videoUrls.first() }
 
-data class Channel(val title: String, val tid: Int? = null, val popular: Boolean = false)
+data class Channel(val title: String, val tid: Int? = null, val popular: Boolean = false, val live: Boolean = false)
 data class DynamicVideo(val id: String, val video: Video, val text: String = "", val time: String = "", val avatar: String = "")
 data class InteractionState(
     val liked: Boolean? = null,
@@ -188,4 +188,21 @@ data class InteractionState(
     val coinCount: Int? = null
 ) { val favorite: Boolean? get() = favoriteFolderIds?.isNotEmpty() }
 data class Danmaku(val time: Float, val mode: Int, val color: Long, val text: String)
-data class DanmakuResult(val items: List<Danmaku>, val usedFallback: Boolean, val source: String)
+data class DanmakuResult(
+    val items: List<Danmaku>, val usedFallback: Boolean, val source: String,
+    val genuineEmpty: Boolean = false, val lastError: String? = null
+)
+
+data class LiveRoomSummary(
+    val roomId: Long, val title: String, val cover: String, val userName: String,
+    val areaName: String, val online: Long
+)
+data class LiveRoomDetail(
+    val roomId: Long, val title: String, val cover: String, val userName: String,
+    val areaName: String, val online: Long
+)
+data class LiveQuality(val quality: Int, val name: String, val url: String, val hls: Boolean = false)
+data class LivePlayInfo(val qualities: List<LiveQuality>) {
+    val default: LiveQuality? get() = qualities.firstOrNull()
+}
+data class LiveMessage(val id: String, val userName: String, val text: String, val time: Long)

@@ -1,4 +1,4 @@
-# Bili Mobile Android Phase 5
+# Bili Mobile Android Phase 6
 
 Native Android client built with Kotlin, Jetpack Compose Material 3, OkHttp, Media3, Coil, and ZXing.
 
@@ -10,12 +10,15 @@ Native Android client built with Kotlin, Jetpack Compose Material 3, OkHttp, Med
 
 GitHub Actions uses Gradle 8.9 to run `lintDebug assembleDebug` and publishes the debug APK as an artifact.
 
-## Phase 5 behavior
+## Phase 6 behavior
 
 - Compact edge-to-edge home with a stable popular recommendation baseline, correctly decoded region rankings, dense image-first cards, loading skeletons, retained content on refresh failures, and three state-retaining tabs. 推荐 and 热门 remain separately labeled even when both use the reliable popular feed.
 - Search is an integrated top-level destination. Logged-in dynamic video posts use the heterogeneous Polymer feed endpoint and safely ignore unsupported card types.
-- Detail requests progressive HTML5 playback first through 720P, falls back once to merged DASH video/audio (or back to progressive), then requires an explicit retry after another source error. The refined overlay has compact playback/seek controls, full-window landscape playback using the same player, clamped saved positions, and clean view detachment.
-- Danmaku loads the comment XML host first and falls back to the API XML endpoint with the same safe parser. Loading, empty, count, and retry states are visible; logged-in users can explicitly send ordinary scrolling danmaku. Comments support explicit top-level posting with retained text on failure.
+- VOD controls start hidden while playing, auto-hide after 2.5 seconds, use compact center controls and two narrow translucent bottom rows, and keep playback errors in a centered retry card. Danmaku settings persist master visibility, opacity, size, speed, area, lane density, and mode filters.
+- Danmaku tries both official XML hosts, caps and sorts safe modes 1-5, distinguishes a genuine empty result from dual failure, and exposes source diagnostics only in settings. Bounded binary-window rendering allocates lanes and reserves the control area. Confirmed sends and comments are pinned locally while server indexing catches up.
+- Home and dynamic support Material 3 pull-to-refresh; dynamic entry refreshes only after 60 seconds. Account destinations use specific refresh jobs instead of refreshing the entire profile. Detail sharing always emits the canonical `bilibili.com/video/{bvid}` URL.
+- 直播 is a separate home source and room-ID destination. It uses defensively parsed room/play APIs, Media3 HLS AVC playback, quality selection, and bounded `gethistory` polling clearly labeled as recent danmaku. Logged-in sends are explicit and never automatically retried after an ambiguous result.
+- The launcher icon is an original vector approximation: a blue/cyan gradient with a white lowercase-b/play mark, adaptive/round/monochrome-capable on supported Android versions and vector-backed on API 26.
 - Like, coin, watch-later, and favorite status requests are isolated and unavailable actions stay disabled with retry feedback. Coin confirmation clearly identifies irreversible real cost. Favorite membership remains tracked per folder and status reloads after writes.
 - Profile history, watch-later, favorite folders, and guarded paged folder contents are independent destinations whose primitive route fields survive rotation. QR remains the default reliable login and uses its creation time for expiry guidance.
 - Experimental mainland (+86, internal `cid=1`) SMS login is available behind an explicit entry. It uses an ephemeral host-restricted in-app Geetest v3 WebView; Geetest resources are third-party network requests. Only unsupported captcha/risk-control failures direct users to QR, while correctable failures preserve SMS context. Phone numbers and codes are never persisted.
@@ -27,6 +30,7 @@ GitHub Actions uses Gradle 8.9 to run `lintDebug assembleDebug` and publishes th
 - This is an unofficial client and is not affiliated with Bilibili. It depends on undocumented public web APIs whose schemas and anti-bot requirements can change.
 - Playback availability and quality depend on account rights, region, and the server response. DRM streams are unsupported.
 - The recommendation baseline intentionally uses the public popular endpoint because the anonymous personalization endpoint is currently unstable. Home categories are cached independently in memory and retain their own content on refresh failure; account sections have no durable offline database cache.
+- Live chat is polling, not websocket real time; badges, gifts, super chat, room moderation, and non-AVC/non-HLS fallbacks are deferred. Protobuf VOD segments are intentionally not included because this build has no generated protobuf schema.
 - Picture-in-picture, uploader space browsing, gesture brightness/volume, cache clearing, nested reply posting, and password login are intentionally deferred. The experimental undocumented SMS API may stop working; the app never collects a password, auto-solves, or bypasses Geetest.
 - Video images use Coil's system-managed memory/disk cache. Captcha WebViews are destroyed and their cache/history are cleared on disposal on a best-effort basis; they do not receive cookie values through JavaScript.
 - Cleartext traffic is disabled. Persistent cookies are encrypted at rest; session cookies remain memory-only according to cookie semantics. Both are removed on sign-out.

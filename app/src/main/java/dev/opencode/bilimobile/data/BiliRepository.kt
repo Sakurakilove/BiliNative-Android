@@ -13,6 +13,7 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -48,6 +49,67 @@ class BiliRepository(context: Context) {
         return get<ApiResponse<RankingData>>("https://api.bilibili.com/x/web-interface/ranking/v2?rid=${channel.tid}&type=all")
             .requireData().list.filter { it.isPlayable }
     }
+
+    suspend fun liveRooms(): List<LiveRoomSummary> {
+        val root = get<JsonElement>("https://api.live.bilibili.com/room/v3/area/getRoomList?platform=web&parent_area_id=0&area_id=0&page=1&page_size=20").apiData()
+        return root.jsonObject["list"]?.jsonArray.orEmpty().take(20).mapNotNull { value -> runCatching {
+            val item = value.jsonObject
+            LiveRoomSummary(item.long("roomid", "room_id"), item.string("title"), item.string("cover", "user_cover"),
+                item.string("uname"), item.string("area_name", "parent_name"), item.long("online"))
+        }.getOrNull()?.takeIf { it.roomId > 0 } }
+    }
+
+    suspend fun liveDetail(roomId: Long): LiveRoomDetail {
+        val init = get<JsonElement>("https://api.live.bilibili.com/room/v1/Room/room_init?id=$roomId").apiData().jsonObject
+        val realId = init.long("room_id").takeIf { it > 0 } ?: roomId
+        val info = get<JsonElement>("https://api.live.bilibili.com/room/v1/Room/get_info?room_id=$realId").apiData().jsonObject
+        return LiveRoomDetail(realId, info.string("title"), info.string("user_cover", "keyframe"),
+            info.string("uname"), info.string("area_name", "parent_area_name"), info.long("online"))
+    }
+
+    suspend fun livePlayInfo(roomId: Long, quality: Int = 0): LivePlayInfo {
+        val url = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo".toHttpUrl().newBuilder()
+            .addQueryParameter("room_id", roomId.toString()).addQueryParameter("protocol", "0,1")
+            .addQueryParameter("format", "0,1,2").addQueryParameter("codec", "0")
+            .addQueryParameter("qn", quality.toString()).addQueryParameter("platform", "web").build().toString()
+        val data = get<JsonElement>(url).apiData().jsonObject
+        val playurl = data["playurl_info"]?.jsonObject?.get("playurl")?.jsonObject
+        val descriptions = playurl?.get("g_qn_desc")?.jsonArray.orEmpty().associate { q ->
+            val o = q.jsonObject; o.long("qn").toInt() to o.string("desc")
+        }
+        val streams = playurl?.get("stream")?.jsonArray.orEmpty()
+        val results = mutableListOf<LiveQuality>()
+        streams.forEach { stream -> stream.jsonObject["format"]?.jsonArray.orEmpty().forEach { format ->
+            val formatObj = format.jsonObject
+            val formatName = formatObj.string("format_name")
+            val hlsFormat = formatName.equals("ts", true) || formatName.contains("hls", true)
+            if (!hlsFormat) return@forEach
+            formatObj["codec"]?.jsonArray.orEmpty().forEach { codec ->
+                val c = codec.jsonObject
+                if (c.string("codec_name").contains("avc", true)) {
+                    val base = c.string("base_url")
+                    c["url_info"]?.jsonArray.orEmpty().forEach { address ->
+                        val a = address.jsonObject; val qn = c.long("current_qn").toInt()
+                        val full = a.string("host") + base + a.string("extra")
+                        if (full.startsWith("http")) results += LiveQuality(qn, descriptions[qn] ?: "清晰度 $qn", full, hls = hlsFormat || full.endsWith(".m3u8"))
+                    }
+                }
+            }
+        } }
+        return LivePlayInfo(results.distinctBy { it.quality }.sortedByDescending { it.quality })
+    }
+
+    suspend fun liveHistory(roomId: Long): List<LiveMessage> {
+        val data = get<JsonElement>("https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory?roomid=$roomId").apiData().jsonObject
+        return (data["room"]?.jsonArray.orEmpty() + data["admin"]?.jsonArray.orEmpty()).takeLast(100).mapIndexedNotNull { index, value -> runCatching {
+            val item = value.jsonObject; val text = item.string("text").take(100)
+            LiveMessage(item.string("id_str", "timeline") + ":$index:$text", item.string("nickname"), text, System.currentTimeMillis())
+        }.getOrNull()?.takeIf { it.text.isNotBlank() } }
+    }
+
+    suspend fun sendLiveMessage(roomId: Long, message: String) = post("https://api.live.bilibili.com/msg/send",
+        mapOf("roomid" to roomId.toString(), "msg" to message, "rnd" to (System.currentTimeMillis() / 1000).toString(),
+            "fontsize" to "25", "color" to "16777215", "mode" to "1", "bubble" to "0"))
 
     suspend fun dynamics(): List<DynamicVideo> {
         val root = get<JsonElement>("https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all")
@@ -207,16 +269,19 @@ class BiliRepository(context: Context) {
             "rnd" to (System.currentTimeMillis() / 1000).toString()))
 
     suspend fun danmaku(cid: Long): DanmakuResult = withContext(Dispatchers.IO) {
-        val primary = "https://comment.bilibili.com/$cid.xml"
-        val fallback = "https://api.bilibili.com/x/v1/dm/list.so?oid=$cid"
-        runCatching { parseDanmaku(primary).also { if (it.isEmpty()) error("主弹幕源为空") } }.fold(
-            onSuccess = { DanmakuResult(it, false, primary) },
-            onFailure = { DanmakuResult(parseDanmaku(fallback), true, fallback) }
-        )
+        val sources = listOf("https://api.bilibili.com/x/v1/dm/list.so?oid=$cid", "https://comment.bilibili.com/$cid.xml")
+        val errors = mutableListOf<String>()
+        sources.forEachIndexed { index, source ->
+            val loaded = runCatching { parseDanmaku(source) }.onFailure { errors += "${source.substringAfter("//").substringBefore('/')}: ${it.message}" }.getOrNull()
+            if (!loaded.isNullOrEmpty()) return@withContext DanmakuResult(loaded, index > 0, source, lastError = errors.lastOrNull())
+        }
+        if (errors.size < sources.size) DanmakuResult(emptyList(), true, sources.last(), genuineEmpty = true, lastError = errors.lastOrNull())
+        else error(errors.joinToString("；"))
     }
 
     private fun parseDanmaku(url: String): List<Danmaku> {
-        val response = client.newCall(Request.Builder().url(url).build()).execute()
+        val response = client.newCall(Request.Builder().url(url).header("Accept", "application/xml,text/xml,*/*")
+            .header("Referer", "https://www.bilibili.com/").build()).execute()
         response.use {
             if (!it.isSuccessful) error("弹幕加载失败（HTTP ${it.code}）")
             val parser = android.util.Xml.newPullParser().apply { setInput(it.body?.byteStream(), "UTF-8") }
@@ -224,13 +289,13 @@ class BiliRepository(context: Context) {
                 while (parser.eventType != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
                     if (parser.eventType == org.xmlpull.v1.XmlPullParser.START_TAG && parser.name == "d") {
                         val values = parser.getAttributeValue(null, "p").orEmpty().split(',')
-                        val text = parser.nextText().trim()
+                        val text = parser.nextText().replace(Regex("[\\u0000-\\u001f&&[^\\n\\t]]"), "").trim()
                         val time = values.getOrNull(0)?.toFloatOrNull()
                         val mode = values.getOrNull(1)?.toIntOrNull()
                         val color = values.getOrNull(3)?.toLongOrNull()
                         if (time != null && time >= 0 && mode != null && mode in 1..5 &&
                             color != null && color in 0L..0xffffffL && text.isNotBlank()
-                        ) add(Danmaku(time, mode, color, text.take(100)))
+                        ) { if (size < 20_000) add(Danmaku(time, mode, color, text.take(100))) }
                     } else parser.next()
                 }
             }.sortedBy(Danmaku::time)
@@ -315,7 +380,7 @@ class BiliRepository(context: Context) {
     private suspend fun post(url: String, values: Map<String, String>) = withContext(Dispatchers.IO) {
         val target = url.toHttpUrl()
         val csrf = cookieJar.valueFor(target, "bili_jct") ?: error("请先登录后再试")
-        val body = FormBody.Builder().apply { (values + ("csrf" to csrf)).forEach { (k, v) -> add(k, v) } }.build()
+        val body = FormBody.Builder().apply { (values + mapOf("csrf" to csrf, "csrf_token" to csrf)).forEach { (k, v) -> add(k, v) } }.build()
         val request = Request.Builder().url(url).header("Origin", "https://www.bilibili.com")
             .header("Referer", "https://www.bilibili.com/").post(body).build()
         try { client.newCall(request).execute().use {
@@ -375,6 +440,15 @@ class BiliRepository(context: Context) {
     private fun encode(value: String): String = java.net.URLEncoder.encode(value, Charsets.UTF_8.name())
         .replace("+", "%20").replace("%7E", "~")
 }
+
+private fun JsonElement.apiData(): JsonElement {
+    val root = jsonObject
+    val code = root["code"]?.jsonPrimitive?.intOrNull ?: -1
+    if (code != 0) error("直播接口错误（$code）")
+    return root["data"] ?: error("直播接口缺少数据")
+}
+private fun Map<String, JsonElement>.string(vararg names: String): String = names.firstNotNullOfOrNull { this[it]?.jsonPrimitive?.contentOrNull }.orEmpty()
+private fun Map<String, JsonElement>.long(vararg names: String): Long = names.firstNotNullOfOrNull { this[it]?.jsonPrimitive?.longOrNull } ?: 0
 
 private const val MAINLAND_CID = "1"
 
