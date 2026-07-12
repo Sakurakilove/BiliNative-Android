@@ -80,6 +80,15 @@ Alternatively, **GitHub Actions** builds automatically: the workflow runs `lintD
 
 ---
 
+## Planned Features (actively iterated)
+
+- **Short-video feed**: Bilibili's home separates long and short videos (uniform cover size). Plan to add an immersive vertical swipe-to-watch short-video screen that plays continuously as you scroll down.
+- **Follow**: Try to add one-tap follow / unfollow for UPs and a following feed entry.
+- **UP space dynamics**: Complete the dynamics view and pagination inside an uploader's profile space.
+- **UI rebuild**: Continuously refine the UI into a more polished, minimal design.
+- **Premium content playback**: Attempt to support Bilibili Premium (大会员) exclusive content.
+- **Anime & movie playback**: Attempt to support bangumi (番剧) and movie playback.
+
 ## License
 
-Released under the [MIT License](./LICENSE) (if applicable).
+Released under the [MIT License](./LICENSE).
