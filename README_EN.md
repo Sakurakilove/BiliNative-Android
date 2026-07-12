@@ -4,6 +4,12 @@ A **third-party**, non-official Bilibili Android client built with Kotlin and Je
 
 > ⚠️ This project is for personal learning, research, and technical exchange only. It is in no way affiliated with or endorsed by Bilibili. See the [Legal Disclaimer](#legal-disclaimer) below.
 
+## Design Principles
+
+- **Lightweight**: No private backend, no redundant background services; small install and runtime footprint.
+- **Power-efficient**: No Push, no always-on background polling; requests are on-demand to save battery.
+- **Minimal**: Native Material 3 UI with clear hierarchy and direct interactions, free of decorative clutter.
+
 ---
 
 ## Features
@@ -11,7 +17,7 @@ A **third-party**, non-official Bilibili Android client built with Kotlin and Je
 - **Video playback**: Media3 (ExoPlayer) streaming with quality switching, scrubbing, and frame-synced danmaku rendering.
 - **Danmaku**: Remote danmaku (official XML hosts with automatic GZIP/DEFLATE decompression and multi-host fallback) plus local danmaku; persisted master toggle, opacity, size, speed, area, and mode filters.
 - **Live**: Media3 HLS (AVC) playback, quality selection, polling danmaku (labeled "recent"), and logged-in sending with optimistic local echo plus server confirmation.
-- **Login**: Default QR-code login; experimental +86 SMS login (in-app Geetest WebView; phone number and code are never persisted).
+- **Login**: Default QR-code login; experimental +86 SMS login (**currently unavailable**: an in-app Geetest WebView was planned; phone number and code are never persisted).
 - **Home feed**: Edge-to-edge compact recommendation feed backed by the public popular endpoint, with genuine pull-to-refresh paging.
 - **Dynamics**: Post-login Polymer heterogeneous feed with pull-to-refresh and safe ignoring of unsupported card types.
 - **Search**: Top-level destination with trending hot search, local search history (clearable), and runtime WBI request signing.
@@ -79,6 +85,15 @@ Alternatively, **GitHub Actions** builds automatically: the workflow runs `lintD
 7. **Takedown**: If a rights holder raises an objection, the developer will cooperate by taking down or disabling the relevant functionality.
 
 ---
+
+## Features Not Planned
+
+For compliance, privacy, and the "lightweight, power-saving, minimal" positioning, the following are **explicitly out of scope**:
+
+- **Live gifting / tips**: No virtual currency, recharge, or gift flows.
+- **Reverse-engineering the official client**: No cracking or reuse of the official app's private protocols, keys, or signing logic.
+- **Charging (UP sponsorship)**: No paid sponsorship interfaces.
+- **Push notifications**: No Push service, to avoid background residency and extra battery drain.
 
 ## Planned Features (actively iterated)
 
