@@ -34,10 +34,11 @@ class BiliRepository(context: Context) {
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .addInterceptor { chain ->
-            chain.proceed(chain.request().newBuilder()
+            val request = chain.request()
+            val builder = request.newBuilder()
                 .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Mobile Safari/537.36")
-                .header("Referer", "https://www.bilibili.com/")
-                .build())
+            if (request.header("Referer") == null) builder.header("Referer", "https://www.bilibili.com/")
+            chain.proceed(builder.build())
         }.build()
 
     suspend fun popular(page: Int = 1): List<Video> = get<ApiResponse<PopularData>>(
@@ -117,7 +118,8 @@ class BiliRepository(context: Context) {
 
     suspend fun sendLiveMessage(roomId: Long, message: String) = post("https://api.live.bilibili.com/msg/send",
         mapOf("roomid" to roomId.toString(), "msg" to message, "rnd" to (System.currentTimeMillis() / 1000).toString(),
-            "fontsize" to "25", "color" to "16777215", "mode" to "1", "bubble" to "0"))
+            "fontsize" to "25", "color" to "16777215", "mode" to "1", "bubble" to "0", "room_type" to "0"),
+        origin = "https://live.bilibili.com", referer = "https://live.bilibili.com/$roomId")
 
     suspend fun dynamics(forceRefresh: Boolean = false): List<DynamicVideo> {
         val url = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all".toHttpUrl().newBuilder()
@@ -145,7 +147,8 @@ class BiliRepository(context: Context) {
                         play = stat?.get("play")?.jsonPrimitive?.contentOrNull.parseCount()),
                     archive["desc"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                     author?.get("pub_time")?.jsonPrimitive?.contentOrNull.orEmpty(),
-                    author?.get("face")?.jsonPrimitive?.contentOrNull.orEmpty()
+                    author?.get("face")?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    author?.get("mid")?.jsonPrimitive?.longOrNull ?: 0
                 )
             }.getOrNull()
         }
@@ -171,6 +174,39 @@ class BiliRepository(context: Context) {
             .filter { it.bvid.isNotBlank() && (it.type.isBlank() || it.type == "video") }
             .map { it.asVideo() }
             .toList()
+    }
+
+    suspend fun hotSearch(limit: Int = 10): List<HotSearchItem> {
+        val data = get<JsonElement>("https://api.bilibili.com/x/web-interface/search/square?limit=${limit.coerceIn(1, 20)}&platform=web").apiData().jsonObject
+        return data["trending"]?.jsonObject?.get("list")?.jsonArray.orEmpty().mapNotNull { value -> runCatching {
+            val item = value.jsonObject
+            val keyword = item.string("keyword")
+            HotSearchItem(keyword, item.string("show_name").ifBlank { keyword }, item.long("heat_score"))
+        }.getOrNull()?.takeIf { it.keyword.isNotBlank() } }
+    }
+
+    suspend fun upProfile(mid: Long): UpProfile {
+        val data = get<JsonElement>("https://api.bilibili.com/x/web-interface/card?mid=$mid&photo=true").apiData().jsonObject
+        val card = data["card"]?.jsonObject ?: error("UP 主资料缺少数据")
+        return UpProfile(mid, card.string("name"), card.string("face"), card.string("sign"),
+            card["level_info"]?.jsonObject?.long("current_level")?.toInt() ?: 0,
+            data.long("follower"), data.string("following").toBoolean(), data.long("archive_count").toInt())
+    }
+
+    suspend fun upArchives(mid: Long): List<Video> {
+        val params = linkedMapOf("mid" to mid.toString(), "pn" to "1", "ps" to "30", "order" to "pubdate", "tid" to "0", "keyword" to "")
+        val nav = profile()
+        val signed = signWbi(params, nav.wbi_img)
+        val builder = "https://api.bilibili.com/x/space/wbi/arc/search".toHttpUrl().newBuilder()
+        signed.forEach { (key, value) -> builder.addQueryParameter(key, value) }
+        val data = get<JsonElement>(builder.build().toString()).apiData().jsonObject
+        return data["list"]?.jsonObject?.get("vlist")?.jsonArray.orEmpty().mapNotNull { value -> runCatching {
+            val item = value.jsonObject
+            val bvid = item.string("bvid")
+            Video(bvid = bvid, aid = item.long("aid"), title = item.string("title"), pic = item.string("pic"),
+                desc = item.string("description"), duration = item.string("length").parseDuration(),
+                owner = Owner(mid, item.string("author")), play = item.long("play"), pubdate = item.long("created"))
+        }.getOrNull()?.takeIf { it.bvid.isNotBlank() } }
     }
 
     suspend fun details(bvid: String): Video = get<ApiResponse<Video>>(
@@ -247,11 +283,11 @@ class BiliRepository(context: Context) {
         )
     }
 
-    suspend fun interaction(aid: Long): InteractionState {
+    suspend fun interaction(aid: Long, mid: Long): InteractionState {
         val liked = runCatching { get<ApiResponse<Int>>("https://api.bilibili.com/x/web-interface/archive/has/like?aid=$aid").data == 1 }.getOrNull()
         val later = runCatching { watchLater().any { it.aid == aid } }.getOrNull()
         val folders = runCatching {
-            get<ApiResponse<FavoriteData>>("https://api.bilibili.com/x/v3/fav/folder/created/list-all?rid=$aid&type=2")
+            get<ApiResponse<FavoriteData>>("https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=$mid&rid=$aid&type=2")
                 .requireData().list.filter(FavoriteFolder::isFavorite).map(FavoriteFolder::id).toSet()
         }.getOrNull()
         val coins = runCatching { get<ApiResponse<CoinData>>("https://api.bilibili.com/x/web-interface/archive/coins?aid=$aid").requireData().multiply }.getOrNull()
@@ -275,6 +311,14 @@ class BiliRepository(context: Context) {
         "https://api.bilibili.com/x/web-interface/coin/add",
         mapOf("aid" to aid.toString(), "bvid" to bvid, "multiply" to multiply.toString(),
             "select_like" to if (selectLike) "1" else "0"),
+        referer = "https://www.bilibili.com/video/$bvid/"
+    )
+
+    suspend fun reportHeartbeat(aid: Long, cid: Long, bvid: String, playedTime: Long, realtime: Long, startTs: Long, playType: Int) = post(
+        "https://api.bilibili.com/x/click-interface/web/heartbeat",
+        mapOf("aid" to aid.toString(), "cid" to cid.toString(), "bvid" to bvid,
+            "played_time" to playedTime.toString(), "realtime" to realtime.toString(),
+            "start_ts" to startTs.toString(), "type" to "3", "dt" to "2", "play_type" to playType.toString()),
         referer = "https://www.bilibili.com/video/$bvid/"
     )
 
@@ -411,12 +455,12 @@ class BiliRepository(context: Context) {
         }
     }
 
-    private suspend fun post(url: String, values: Map<String, String>, referer: String = "https://www.bilibili.com/") = withContext(Dispatchers.IO) {
+    private suspend fun post(url: String, values: Map<String, String>, origin: String = "https://www.bilibili.com", referer: String = "https://www.bilibili.com/") = withContext(Dispatchers.IO) {
         val target = url.toHttpUrl()
         cookieJar.valueFor(target, "SESSDATA") ?: error("登录会话已失效，请重新登录")
         val csrf = cookieJar.valueFor(target, "bili_jct") ?: error("请先登录后再试")
         val body = FormBody.Builder().apply { (values + mapOf("csrf" to csrf, "csrf_token" to csrf)).forEach { (k, v) -> add(k, v) } }.build()
-        val request = Request.Builder().url(url).header("Origin", "https://www.bilibili.com")
+        val request = Request.Builder().url(url).header("Origin", origin)
             .header("Referer", referer).post(body).build()
         try { client.newCall(request).execute().use {
             if (!it.isSuccessful) error("操作失败（HTTP ${it.code}）")

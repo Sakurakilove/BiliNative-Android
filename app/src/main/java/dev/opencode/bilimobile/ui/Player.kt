@@ -4,6 +4,7 @@ package dev.opencode.bilimobile.ui
 
 import android.app.Activity
 import android.content.pm.ActivityInfo
+import android.os.SystemClock
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -81,12 +82,15 @@ internal fun VideoPlayer(
     retryDanmaku: () -> Unit,
     confirmDanmakuAfterRefresh: () -> Unit,
     sendDanmaku: (String, Long, (Boolean) -> Unit) -> Unit,
+    reportWatch: (Long, Long, Long, Int) -> Unit,
     quality: (Int) -> Unit,
     fallback: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val owner = LocalLifecycleOwner.current
     val prefs = remember { context.getSharedPreferences("playback_positions", 0) }
+    val watchStartTs = remember(key) { System.currentTimeMillis() / 1000 }
+    val watchStartElapsed = remember(key) { SystemClock.elapsedRealtime() }
     val player = remember(result.videoUrls, result.audioUrl) {
         ExoPlayer.Builder(context).build().apply {
             val factory = DefaultHttpDataSource.Factory().setDefaultRequestProperties(headers)
@@ -141,6 +145,7 @@ internal fun VideoPlayer(
                     }
                     if (player.duration > 0 && player.currentPosition > player.duration) player.seekTo(player.duration)
                 }
+                if (state == Player.STATE_ENDED) reportWatch(-1, (SystemClock.elapsedRealtime() - watchStartElapsed) / 1000, watchStartTs, 4)
             }
             override fun onPlayerError(error: PlaybackException) {
                 playbackError = "播放源连接失败"
@@ -154,6 +159,13 @@ internal fun VideoPlayer(
         onDispose { player.removeListener(listener) }
     }
     LaunchedEffect(player, result) { playbackError = null }
+    LaunchedEffect(player, key) {
+        reportWatch(player.currentPosition / 1000, 0, watchStartTs, 1)
+        while (true) {
+            delay(15_000)
+            reportWatch(player.currentPosition / 1000, (SystemClock.elapsedRealtime() - watchStartElapsed) / 1000, watchStartTs, 0)
+        }
+    }
     LaunchedEffect(player) {
         while (true) {
             withFrameNanos {
@@ -165,12 +177,12 @@ internal fun VideoPlayer(
         }
     }
     LaunchedEffect(controls, playing) { if (controls && playing) { delay(2_500); controls = false } }
-    DisposableEffect(player) { onDispose { prefs.edit().putLong(key, player.currentPosition).apply(); player.release() } }
+    DisposableEffect(player) { onDispose { reportWatch(player.currentPosition / 1000, (SystemClock.elapsedRealtime() - watchStartElapsed) / 1000, watchStartTs, 4); prefs.edit().putLong(key, player.currentPosition).apply(); player.release() } }
     DisposableEffect(owner, player) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_PAUSE -> { resumeAfterPause = player.playWhenReady; player.pause() }
-                Lifecycle.Event.ON_RESUME -> if (resumeAfterPause) player.play()
+                Lifecycle.Event.ON_PAUSE -> { reportWatch(player.currentPosition / 1000, (SystemClock.elapsedRealtime() - watchStartElapsed) / 1000, watchStartTs, 2); resumeAfterPause = player.playWhenReady; player.pause() }
+                Lifecycle.Event.ON_RESUME -> if (resumeAfterPause) { reportWatch(player.currentPosition / 1000, (SystemClock.elapsedRealtime() - watchStartElapsed) / 1000, watchStartTs, 3); player.play() }
                 else -> Unit
             }
         }

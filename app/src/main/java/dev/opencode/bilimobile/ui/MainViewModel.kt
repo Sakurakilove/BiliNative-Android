@@ -27,6 +27,8 @@ import dev.opencode.bilimobile.data.LiveMessage
 import dev.opencode.bilimobile.data.CommentMember
 import dev.opencode.bilimobile.data.CommentContent
 import dev.opencode.bilimobile.data.Danmaku
+import dev.opencode.bilimobile.data.HotSearchItem
+import dev.opencode.bilimobile.data.UpProfile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -42,6 +44,7 @@ data class ContentState<T>(
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = BiliRepository(application)
+    private val searchPreferences = application.getSharedPreferences("search_history", 0)
     private val _popular = MutableStateFlow(ContentState<List<Video>>(loading = true))
     val popular = _popular.asStateFlow()
     val channels = listOf(Channel("推荐"), Channel("热门", popular = true), Channel("直播", live = true), Channel("动画", 1), Channel("游戏", 4), Channel("知识", 36), Channel("科技", 188), Channel("生活", 160))
@@ -49,6 +52,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val channel = _channel.asStateFlow()
     private val _search = MutableStateFlow(ContentState<List<Video>>(value = emptyList()))
     val search = _search.asStateFlow()
+    private val _hotSearch = MutableStateFlow(ContentState<List<HotSearchItem>>(loading = true))
+    val hotSearch = _hotSearch.asStateFlow()
+    private val _searchHistory = MutableStateFlow(searchPreferences.getString("items", "").orEmpty().split('\u001f').filter(String::isNotBlank))
+    val searchHistory = _searchHistory.asStateFlow()
+    private val _upProfile = MutableStateFlow(ContentState<UpProfile>())
+    val upProfile = _upProfile.asStateFlow()
+    private val _upVideos = MutableStateFlow(ContentState<List<Video>>())
+    val upVideos = _upVideos.asStateFlow()
     private val _details = MutableStateFlow(ContentState<Video>())
     val details = _details.asStateFlow()
     private val _playUrl = MutableStateFlow(ContentState<PlayResult>())
@@ -138,6 +149,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         refreshPopular()
         refreshProfile()
+        loadHotSearch()
     }
 
     fun refreshPopular(force: Boolean = false) {
@@ -215,25 +227,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val text = message.trim().take(100); if (text.isBlank() || _livePosting.value.loading) return
         viewModelScope.launch {
             _livePosting.value = ContentState(loading = true)
-            try { repository.sendLiveMessage(roomId, text); _livePosting.value = ContentState(Unit); finished(true) }
+            try {
+                repository.sendLiveMessage(roomId, text)
+                val user = _profile.value.value
+                val local = LiveMessage("local:${System.currentTimeMillis()}", user?.uname.orEmpty(), text, System.currentTimeMillis())
+                _liveMessages.value = ContentState((_liveMessages.value.value.orEmpty() + local).distinctBy { it.id }.takeLast(100))
+                _livePosting.value = ContentState(Unit); finished(true)
+            }
             catch (error: Throwable) { _livePosting.value = ContentState(error = if (error is AmbiguousWriteException) "发送结果未知，请勿重复发送" else error.userMessage()); finished(false) }
         }
     }
 
     fun search(query: String) {
         if (query.isBlank()) return
+        val normalized = query.trim()
+        val history = (listOf(normalized) + _searchHistory.value.filterNot { it == normalized }).take(12)
+        _searchHistory.value = history
+        searchPreferences.edit().putString("items", history.joinToString("\u001f")).apply()
         searchJob?.cancel()
         val request = ++searchRequest
         searchJob = viewModelScope.launch {
             _search.value = ContentState(value = _search.value.value, loading = true)
             try {
-                val results = repository.search(query.trim())
+                val results = repository.search(normalized)
                 if (request == searchRequest) _search.value = ContentState(value = results)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
                 if (request == searchRequest) _search.value = ContentState(error = error.userMessage())
             }
+        }
+    }
+
+    fun clearSearchHistory() { _searchHistory.value = emptyList(); searchPreferences.edit().remove("items").apply() }
+
+    fun loadHotSearch() {
+        viewModelScope.launch {
+            _hotSearch.value = _hotSearch.value.copy(loading = true, error = null)
+            try { _hotSearch.value = ContentState(repository.hotSearch()) }
+            catch (error: Throwable) { _hotSearch.value = ContentState(error = error.userMessage()) }
+        }
+    }
+
+    fun loadUpSpace(mid: Long) {
+        _upProfile.value = ContentState(loading = true); _upVideos.value = ContentState(loading = true)
+        viewModelScope.launch {
+            try { _upProfile.value = ContentState(repository.upProfile(mid)) }
+            catch (error: Throwable) { _upProfile.value = ContentState(error = error.userMessage()) }
+        }
+        viewModelScope.launch {
+            try { _upVideos.value = ContentState(repository.upArchives(mid)) }
+            catch (error: Throwable) { _upVideos.value = ContentState(error = error.userMessage()) }
         }
     }
 
@@ -308,19 +352,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val request = detailsRequest
         interactionJob = viewModelScope.launch {
         _interaction.value = ContentState(loading = true)
-        try { val result = repository.interaction(aid); if (request == detailsRequest && aid == currentAid) _interaction.value = ContentState(result) }
+        try { val result = repository.interaction(aid, _profile.value.value?.mid ?: error("请先登录后再试")); if (request == detailsRequest && aid == currentAid) _interaction.value = ContentState(result) }
         catch (error: Throwable) { if (request == detailsRequest && aid == currentAid) _interaction.value = ContentState(error = error.userMessage()) }
         }
     }
 
-    fun toggleLike(aid: Long) = updateInteraction { state -> val current = state.liked ?: return@updateInteraction state; repository.setLike(aid, !current); repository.interaction(aid) }
-    fun toggleWatchLater(aid: Long) = updateInteraction { state -> val current = state.watchLater ?: return@updateInteraction state; repository.setWatchLater(aid, !current); repository.interaction(aid) }
+    fun toggleLike(aid: Long) = updateInteraction { state -> val current = state.liked ?: return@updateInteraction state; repository.setLike(aid, !current); repository.interaction(aid, _profile.value.value?.mid ?: error("请先登录后再试")) }
+    fun toggleWatchLater(aid: Long) = updateInteraction { state -> val current = state.watchLater ?: return@updateInteraction state; repository.setWatchLater(aid, !current); repository.interaction(aid, _profile.value.value?.mid ?: error("请先登录后再试")) }
     fun toggleFavorite(aid: Long, folderId: Long) = updateInteraction { state ->
         val folders = state.favoriteFolderIds ?: return@updateInteraction state
-        repository.setFavorite(aid, folderId, folderId !in folders); repository.interaction(aid)
+        repository.setFavorite(aid, folderId, folderId !in folders); repository.interaction(aid, _profile.value.value?.mid ?: error("请先登录后再试"))
     }
     fun addCoin(aid: Long, bvid: String, count: Int, like: Boolean) = updateInteraction { state ->
-        repository.addCoin(aid, bvid, count, like); repository.interaction(aid)
+        repository.addCoin(aid, bvid, count, like); repository.interaction(aid, _profile.value.value?.mid ?: error("请先登录后再试"))
     }
 
     fun postComment(message: String, finished: (Boolean) -> Unit) {
@@ -365,7 +409,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         try { val result = action(old); if (request == detailsRequest && aid == currentAid) _interaction.value = ContentState(result) }
         catch (error: AmbiguousWriteException) {
             if (request == detailsRequest && aid == currentAid) {
-                val reconciled = runCatching { repository.interaction(aid) }.getOrNull()
+                val reconciled = runCatching { repository.interaction(aid, _profile.value.value?.mid ?: return@runCatching null) }.getOrNull()
                 _interaction.value = if (reconciled != null) ContentState(reconciled, error = "操作结果已重新同步")
                 else ContentState(old, error = "操作结果未知，请刷新确认")
             }
@@ -628,6 +672,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun playbackHeaders() = repository.playbackHeaders()
     fun livePlaybackHeaders(roomId: Long) = repository.livePlaybackHeaders(roomId)
+    fun reportWatchProgress(aid: Long, cid: Long, bvid: String, playedTime: Long, realtime: Long, startTs: Long, playType: Int) {
+        if (_profile.value.value?.isLogin != true) return
+        viewModelScope.launch { runCatching { repository.reportHeartbeat(aid, cid, bvid, playedTime, realtime, startTs, playType) } }
+    }
 
     private fun cancelDetailJobs() {
         relatedJob?.cancel(); commentsJob?.cancel(); danmakuJob?.cancel(); interactionJob?.cancel(); commentPostingJob?.cancel(); danmakuPostingJob?.cancel()

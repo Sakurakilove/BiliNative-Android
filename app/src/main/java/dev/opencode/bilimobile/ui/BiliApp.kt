@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
@@ -80,14 +81,15 @@ private sealed interface AccountDestination { data object History : AccountDesti
 @Composable fun BiliApp(vm: MainViewModel = viewModel()) {
     var tab by rememberSaveable { mutableStateOf(RootTab.Home) }
     var detail by rememberSaveable { mutableStateOf<String?>(null) }
+    var upMid by rememberSaveable { mutableLongStateOf(0L) }
     var liveRoom by rememberSaveable { mutableLongStateOf(0L) }
     var search by rememberSaveable { mutableStateOf(false) }
     var accountType by rememberSaveable { mutableStateOf("") }; var accountId by rememberSaveable { mutableLongStateOf(0L) }; var accountTitle by rememberSaveable { mutableStateOf("") }
     val account: AccountDestination? = when (accountType) { "history" -> AccountDestination.History; "favorites" -> AccountDestination.Favorites; "later" -> AccountDestination.Later; "folder" -> AccountDestination.Folder(accountId, accountTitle); else -> null }
     fun setAccount(value: AccountDestination?) { when (value) { AccountDestination.History -> accountType = "history"; AccountDestination.Favorites -> accountType = "favorites"; AccountDestination.Later -> accountType = "later"; is AccountDestination.Folder -> { accountType = "folder"; accountId = value.id; accountTitle = value.title }; null -> { accountType = ""; accountId = 0; accountTitle = "" } } }
-    BackHandler(liveRoom > 0 || detail != null || search || account != null) { when { liveRoom > 0 -> { vm.closeLiveRoom(); liveRoom = 0 }; detail != null -> detail = null; account is AccountDestination.Folder -> setAccount(AccountDestination.Favorites); account != null -> setAccount(null); else -> search = false } }
+    BackHandler(liveRoom > 0 || upMid > 0 || detail != null || search || account != null) { when { liveRoom > 0 -> { vm.closeLiveRoom(); liveRoom = 0 }; upMid > 0 -> upMid = 0; detail != null -> detail = null; account is AccountDestination.Folder -> setAccount(AccountDestination.Favorites); account != null -> setAccount(null); else -> search = false } }
     Scaffold(bottomBar = {
-        AnimatedVisibility(liveRoom == 0L && detail == null && !search && account == null, enter = fadeIn(), exit = fadeOut()) {
+        AnimatedVisibility(liveRoom == 0L && upMid == 0L && detail == null && !search && account == null, enter = fadeIn(), exit = fadeOut()) {
             NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
                 RootTab.entries.forEach { item -> NavigationBarItem(tab == item, { tab = item }, {
                     Icon(when (item) { RootTab.Home -> Icons.Default.Home; RootTab.Dynamic -> Icons.Default.Subscriptions; RootTab.Profile -> Icons.Default.Person }, tabTitle(item))
@@ -96,18 +98,20 @@ private sealed interface AccountDestination { data object History : AccountDesti
         }
     }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
-            AnimatedContent(listOf(detail, search, account, liveRoom), label = "destination") { target ->
+            AnimatedContent(listOf(detail, search, account, liveRoom, upMid), label = "destination") { target ->
                 val d = target[0] as String?
                 val s = target[1] as Boolean
                 val a = target[2] as AccountDestination?
                 val lr = target[3] as Long
+                val uploader = target[4] as Long
                 when {
                     lr > 0L -> LiveRoomScreen(lr, vm)
-                    d != null -> DetailScreen(d, vm) { detail = it }
+                    uploader > 0L -> UpSpaceScreen(uploader, vm, { upMid = 0 }) { detail = it }
+                    d != null -> DetailScreen(d, vm, { detail = it }) { upMid = it }
                     s -> SearchScreen(vm, { search = false }, { detail = it })
                     a != null -> AccountScreen(a, vm, ::setAccount, { detail = it })
                     tab == RootTab.Home -> HomeScreen(vm, { search = true }, { detail = it }, { liveRoom = it })
-                    tab == RootTab.Dynamic -> DynamicScreen(vm) { detail = it }
+                    tab == RootTab.Dynamic -> DynamicScreen(vm, { detail = it }) { upMid = it }
                     else -> ProfileScreen(vm, ::setAccount) { detail = it }
                 }
             }
@@ -143,28 +147,70 @@ private sealed interface AccountDestination { data object History : AccountDesti
 @Composable private fun LiveRoomScreen(roomId: Long, vm: MainViewModel) {
     val detail by vm.liveDetail.collectAsState(); val play by vm.livePlay.collectAsState(); val messages by vm.liveMessages.collectAsState(); val posting by vm.livePosting.collectAsState(); val profile by vm.profile.collectAsState()
     var text by rememberSaveable(roomId) { mutableStateOf("") }
+    val messageListState = rememberLazyListState()
     LaunchedEffect(roomId) { vm.loadLiveRoom(roomId) }
+    LaunchedEffect(messages.value?.lastOrNull()?.id) { if (!messages.value.isNullOrEmpty()) messageListState.animateScrollToItem(0) }
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxWidth().aspectRatio(16 / 9f).background(Color.Black)) { when { play.value?.default != null -> LivePlayer(play.value!!, vm.livePlaybackHeaders(roomId)) { vm.loadLiveRoom(roomId, it) }; play.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center), color = Color.White); else -> Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) { Text(play.error ?: "暂无可用直播流", color = Color.White); TextButton({ vm.loadLiveRoom(roomId) }) { Text("重试") } } } }
         detail.value?.let { room -> Column(Modifier.padding(14.dp)) { Text(room.title, fontSize = 18.sp, fontWeight = FontWeight.Bold); Text("${room.userName} · ${room.areaName} · ${formatCount(room.online)} 人气", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
-        Text("近期弹幕（约每 2 秒更新）", Modifier.padding(horizontal = 14.dp, vertical = 6.dp), fontWeight = FontWeight.SemiBold)
+        Text("直播弹幕", Modifier.padding(horizontal = 16.dp, vertical = 10.dp), style = MaterialTheme.typography.titleMedium)
         messages.error?.let { Text("聊天加载失败：$it", Modifier.padding(horizontal = 14.dp), color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
-        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 14.dp)) { items(messages.value.orEmpty().asReversed(), key = { it.id }) { item -> Text("${item.userName.ifBlank { "用户" }}：${item.text}", Modifier.padding(vertical = 4.dp), fontSize = 13.sp) } }
-        if (profile.value?.isLogin == true) Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) { OutlinedTextField(text, { text = it.take(100) }, Modifier.weight(1f), singleLine = true, placeholder = { Text("发送直播弹幕") }); Button({ vm.sendLiveMessage(text) { if (it) text = "" } }, enabled = text.isNotBlank() && !posting.loading) { Text("发送") } }
+        LazyColumn(Modifier.weight(1f), state = messageListState, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)) { items(messages.value.orEmpty().asReversed(), key = { it.id }) { item -> Row(Modifier.padding(vertical = 5.dp)) { Text(item.userName.ifBlank { "用户" }, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary); Text("  ${item.text}", style = MaterialTheme.typography.bodyMedium) } } }
+        if (profile.value?.isLogin == true) Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceVariant) { Row(verticalAlignment = Alignment.CenterVertically) { TextField(text, { text = it.take(100) }, Modifier.weight(1f), singleLine = true, placeholder = { Text("发送直播弹幕") }, colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent)); IconButton({ vm.sendLiveMessage(text) { if (it) text = "" } }, enabled = text.isNotBlank() && !posting.loading) { if (posting.loading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Icon(Icons.Default.Send, "发送") } } }
         posting.error?.let { Text(it, Modifier.padding(horizontal = 12.dp), color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
     }
 }
 
-@Composable private fun SearchScreen(vm: MainViewModel, close: () -> Unit, open: (String) -> Unit) {
-    val state by vm.search.collectAsState(); var query by rememberSaveable { mutableStateOf("") }
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun UpSpaceScreen(mid: Long, vm: MainViewModel, close: () -> Unit, open: (String) -> Unit) {
+    val profile by vm.upProfile.collectAsState(); val videos by vm.upVideos.collectAsState()
+    LaunchedEffect(mid) { vm.loadUpSpace(mid) }
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(close) { Icon(Icons.Default.ArrowBack, "返回") }
-            TextField(query, { query = it }, Modifier.weight(1f), placeholder = { Text("搜索视频") }, leadingIcon = { Icon(Icons.Default.Search, null) },
-                singleLine = true, shape = RoundedCornerShape(18.dp), colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { vm.search(query) }))
+        TopAppBar(title = { Text("UP 主空间") }, navigationIcon = { IconButton(close) { Icon(Icons.Default.ArrowBack, "返回") } })
+        StateBody(profile, { vm.loadUpSpace(mid) }) { user ->
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                    NetworkImage(user.face, user.name, Modifier.size(72.dp).clip(CircleShape), 160, 160)
+                    Column(Modifier.padding(start = 16.dp).weight(1f)) {
+                        Text(user.name, style = MaterialTheme.typography.headlineSmall)
+                        Text("LV${user.level} · UID ${user.mid}", Modifier.padding(top = 3.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (user.sign.isNotBlank()) Text(user.sign, Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodyMedium, maxLines = 2)
+                    }
+                }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(32.dp)) {
+                    SpaceStat(formatCount(user.follower), "粉丝"); SpaceStat(user.archiveCount.toString(), "投稿")
+                }
+                HorizontalDivider(Modifier.padding(top = 12.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                Text("最新投稿", Modifier.padding(horizontal = 16.dp, vertical = 16.dp), style = MaterialTheme.typography.titleMedium)
+                Box(Modifier.weight(1f)) { StateBody(videos, { vm.loadUpSpace(mid) }, skeleton = true) { VideoGrid(it, open) } }
+            }
         }
-        StateBody(state, { vm.search(query) }) { if (it.isEmpty()) Empty("输入关键词开始搜索") else VideoGrid(it, open) }
+    }
+}
+
+@Composable private fun RowScope.SpaceStat(value: String, label: String) { Column { Text(value, style = MaterialTheme.typography.titleMedium); Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+
+@Composable private fun SearchScreen(vm: MainViewModel, close: () -> Unit, open: (String) -> Unit) {
+    val state by vm.search.collectAsState(); val hot by vm.hotSearch.collectAsState(); val history by vm.searchHistory.collectAsState()
+    var query by rememberSaveable { mutableStateOf("") }; var submitted by rememberSaveable { mutableStateOf(false) }
+    fun submit(value: String) { val text = value.trim(); if (text.isNotBlank()) { query = text; submitted = true; vm.search(text) } }
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.padding(horizontal = 8.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(close) { Icon(Icons.Default.ArrowBack, "返回") }
+            TextField(query, { query = it; if (it.isBlank()) submitted = false }, Modifier.weight(1f), placeholder = { Text("搜索视频、UP 主") }, leadingIcon = { Icon(Icons.Default.Search, null) },
+                trailingIcon = { if (query.isNotBlank()) IconButton({ query = ""; submitted = false }) { Icon(Icons.Default.Close, "清空") } },
+                singleLine = true, shape = MaterialTheme.shapes.medium, colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { submit(query) }))
+            TextButton({ submit(query) }, enabled = query.isNotBlank()) { Text("搜索") }
+        }
+        if (!submitted) LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
+            if (history.isNotEmpty()) item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("搜索历史", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium); IconButton(vm::clearSearchHistory) { Icon(Icons.Default.DeleteOutline, "清空历史") } } }
+            if (history.isNotEmpty()) item { LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 8.dp)) { items(history) { word -> Surface(Modifier.clickable { submit(word) }, shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surfaceVariant) { Text(word, Modifier.padding(horizontal = 12.dp, vertical = 9.dp), style = MaterialTheme.typography.bodyMedium, maxLines = 1) } } } }
+            item { Text("热搜", Modifier.padding(top = 20.dp, bottom = 8.dp), style = MaterialTheme.typography.titleMedium) }
+            if (hot.loading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+            hot.error?.let { message -> item { ErrorBanner(message, vm::loadHotSearch) } }
+            items(hot.value.orEmpty().chunked(2)) { row -> Row(Modifier.fillMaxWidth()) { row.forEachIndexed { index, item -> val rank = hot.value.orEmpty().indexOf(item) + 1; Row(Modifier.weight(1f).heightIn(min = 48.dp).clickable { submit(item.keyword) }.padding(end = if (index == 0) 12.dp else 0.dp), verticalAlignment = Alignment.CenterVertically) { Text(rank.toString(), Modifier.width(26.dp), style = MaterialTheme.typography.labelLarge, color = if (rank <= 3) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant); Text(item.displayName, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) } }; if (row.size == 1) Spacer(Modifier.weight(1f)) } }
+        } else StateBody(state, { submit(query) }) { results -> if (results.isEmpty()) Empty("没有找到“$query”") else LazyColumn { items(results, key = { it.bvid }) { video -> RelatedRow(video) { open(video.bvid) } } } }
     }
 }
 
@@ -184,14 +230,14 @@ private sealed interface AccountDestination { data object History : AccountDesti
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun DynamicScreen(vm: MainViewModel, open: (String) -> Unit) {
+@Composable private fun DynamicScreen(vm: MainViewModel, open: (String) -> Unit, openUp: (Long) -> Unit) {
     val profile by vm.profile.collectAsState(); val state by vm.dynamics.collectAsState()
     LaunchedEffect(profile.value?.isLogin) { if (profile.value?.isLogin == true) vm.refreshDynamicsIfStale() }
     Column { CompactTitle("动态", "关注的最新投稿")
         if (profile.value?.isLogin != true) Empty("登录后查看关注动态") else PullToRefreshBox(state.loading, { vm.loadDynamics(force = true) }, Modifier.weight(1f)) { StateBody(state, { vm.loadDynamics(force = true) }) { list ->
             LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)) { items(list, key = { it.id }) { item ->
                 Column(Modifier.fillMaxWidth().clickable { open(item.video.bvid) }.padding(vertical = 16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) { NetworkImage(item.avatar, item.video.creator, Modifier.size(40.dp).clip(CircleShape), 80, 80); Spacer(Modifier.width(12.dp)); Column { Text(item.video.creator, style = MaterialTheme.typography.titleSmall); Text(item.time, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+                    Row(Modifier.clickable(enabled = item.authorMid > 0) { openUp(item.authorMid) }, verticalAlignment = Alignment.CenterVertically) { NetworkImage(item.avatar, item.video.creator, Modifier.size(40.dp).clip(CircleShape), 80, 80); Spacer(Modifier.width(12.dp)); Column { Text(item.video.creator, style = MaterialTheme.typography.titleSmall); Text(item.time, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
                     if (item.text.isNotBlank()) Text(item.text, Modifier.padding(top = 12.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3)
                     Text(item.video.title, Modifier.padding(top = 10.dp, bottom = 8.dp), style = MaterialTheme.typography.titleMedium)
                     NetworkImage(item.video.coverUrl, item.video.title, Modifier.fillMaxWidth().aspectRatio(16 / 9f).clip(MaterialTheme.shapes.medium), 720, 405)
@@ -202,19 +248,20 @@ private sealed interface AccountDestination { data object History : AccountDesti
     }
 }
 
-@Composable private fun DetailScreen(bvid: String, vm: MainViewModel, open: (String) -> Unit) {
+@Composable private fun DetailScreen(bvid: String, vm: MainViewModel, open: (String) -> Unit, openUp: (Long) -> Unit) {
     val detail by vm.details.collectAsState(); val stream by vm.playUrl.collectAsState(); val comments by vm.comments.collectAsState(); val related by vm.related.collectAsState(); val interaction by vm.interaction.collectAsState(); val replies by vm.replies.collectAsState(); val danmaku by vm.danmaku.collectAsState(); val favorites by vm.favorites.collectAsState(); val profile by vm.profile.collectAsState(); val commentPosting by vm.commentPosting.collectAsState(); val danmakuPosting by vm.danmakuPosting.collectAsState()
     val pinned by vm.pinnedOwnComment.collectAsState(); val context = LocalContext.current
     var chooseFolder by rememberSaveable { mutableStateOf(false) }
     var chooseCoin by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(bvid) { vm.loadDetails(bvid) }
+    LaunchedEffect(detail.value?.aid, profile.value?.isLogin) { if (detail.value?.aid != null && profile.value?.isLogin == true) vm.loadInteraction(detail.value!!.aid) }
     StateBody(detail, { vm.loadDetails(bvid) }) { video ->
         var cid by remember(video.bvid) { mutableLongStateOf(video.cid.takeIf { it > 0 } ?: video.pages.firstOrNull()?.cid ?: 0) }; var section by rememberSaveable(video.bvid) { mutableIntStateOf(0) }; var expanded by rememberSaveable(video.bvid) { mutableStateOf(false) }; var commentText by rememberSaveable(video.bvid) { mutableStateOf("") }
         Column(Modifier.fillMaxSize()) {
-            Box(Modifier.fillMaxWidth().aspectRatio(16 / 9f).background(Color.Black)) { when { stream.value != null -> VideoPlayer(key = "${video.bvid}:$cid", result = stream.value!!, headers = vm.playbackHeaders(), danmaku = danmaku, loggedIn = profile.value?.isLogin == true, danmakuPosting = danmakuPosting, retryDanmaku = { vm.loadDanmaku(cid) }, confirmDanmakuAfterRefresh = vm::clearDanmakuPostingAfterRefresh, sendDanmaku = vm::postDanmaku, quality = { vm.loadStream(video.bvid, cid, it) }, fallback = { vm.fallbackStream(video.bvid, cid, stream.value!!.quality, it) }); stream.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center), color = Color.White); else -> Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) { Text(stream.error ?: stringResource(dev.opencode.bilimobile.R.string.player_unavailable), color = Color.White); TextButton({ vm.loadStream(video.bvid, cid) }) { Text(stringResource(dev.opencode.bilimobile.R.string.retry)) } } } }
+            Box(Modifier.fillMaxWidth().aspectRatio(16 / 9f).background(Color.Black)) { when { stream.value != null -> VideoPlayer(key = "${video.bvid}:$cid", result = stream.value!!, headers = vm.playbackHeaders(), danmaku = danmaku, loggedIn = profile.value?.isLogin == true, danmakuPosting = danmakuPosting, retryDanmaku = { vm.loadDanmaku(cid) }, confirmDanmakuAfterRefresh = vm::clearDanmakuPostingAfterRefresh, sendDanmaku = vm::postDanmaku, reportWatch = { played, realtime, start, type -> vm.reportWatchProgress(video.aid, cid, video.bvid, played, realtime, start, type) }, quality = { vm.loadStream(video.bvid, cid, it) }, fallback = { vm.fallbackStream(video.bvid, cid, stream.value!!.quality, it) }); stream.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center), color = Color.White); else -> Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) { Text(stream.error ?: stringResource(dev.opencode.bilimobile.R.string.player_unavailable), color = Color.White); TextButton({ vm.loadStream(video.bvid, cid) }) { Text(stringResource(dev.opencode.bilimobile.R.string.retry)) } } } }
             LazyColumn(Modifier.weight(1f)) {
             item { Column(Modifier.padding(horizontal = 16.dp, vertical = 16.dp).animateContentSize()) { Row(verticalAlignment = Alignment.CenterVertically) { Text(clean(video.title), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, maxLines = if (expanded) 8 else 2, overflow = TextOverflow.Ellipsis); IconButton({ context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "${clean(video.title)}\nhttps://www.bilibili.com/video/${video.bvid}") }, "分享视频")) }) { Icon(Icons.Default.Share, "分享视频") } }; Text("${formatCount(video.views)} 播放 · ${formatDate(video.pubdate)}", Modifier.padding(top = 6.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant); if (expanded) Text(video.desc.ifBlank { "暂无简介" }, Modifier.padding(top = 12.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant); TextButton({ expanded = !expanded }, contentPadding = PaddingValues(horizontal = 0.dp)) { Text(if (expanded) "收起简介" else "展开简介") } } }
-            item { Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { NetworkImage(video.owner.face, video.creator, Modifier.size(44.dp).clip(CircleShape), 96, 96); Spacer(Modifier.width(12.dp)); Column { Text(video.creator, style = MaterialTheme.typography.titleMedium, maxLines = 1); Text("UID ${video.owner.mid}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }; Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) { InteractionButton(Icons.Default.ThumbUp, if (interaction.value?.liked == true) "已赞" else formatCount(video.stat.like), interaction.value?.liked == true, interaction.value?.liked != null && !interaction.loading) { vm.toggleLike(video.aid) }; InteractionButton(Icons.Default.Paid, interaction.value?.coinCount?.let { "硬币 $it" } ?: "硬币", false, interaction.value?.coinCount != null && interaction.value?.coinCount!! < 2 && !interaction.loading) { chooseCoin = true }; InteractionButton(Icons.Default.Schedule, "稍后", interaction.value?.watchLater == true, interaction.value?.watchLater != null && !interaction.loading) { vm.toggleWatchLater(video.aid) }; InteractionButton(Icons.Default.Star, "收藏", interaction.value?.favorite == true, interaction.value?.favoriteFolderIds != null && !interaction.loading) { chooseFolder = true } } } }
+            item { Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) { Row(Modifier.fillMaxWidth().clickable(enabled = video.owner.mid > 0) { openUp(video.owner.mid) }.heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) { NetworkImage(video.owner.face, video.creator, Modifier.size(44.dp).clip(CircleShape), 96, 96); Spacer(Modifier.width(12.dp)); Column { Text(video.creator, style = MaterialTheme.typography.titleMedium, maxLines = 1); Text("UID ${video.owner.mid} · 查看空间", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }; Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) { InteractionButton(Icons.Default.ThumbUp, if (interaction.value?.liked == true) "已赞" else formatCount(video.stat.like), interaction.value?.liked == true, interaction.value?.liked != null && !interaction.loading) { vm.toggleLike(video.aid) }; InteractionButton(Icons.Default.Paid, interaction.value?.coinCount?.let { "硬币 $it" } ?: "硬币", false, interaction.value?.coinCount != null && interaction.value?.coinCount!! < 2 && !interaction.loading) { chooseCoin = true }; InteractionButton(Icons.Default.Schedule, "稍后", interaction.value?.watchLater == true, interaction.value?.watchLater != null && !interaction.loading) { vm.toggleWatchLater(video.aid) }; InteractionButton(Icons.Default.Star, "收藏", interaction.value?.favorite == true, profile.value?.isLogin == true && !interaction.loading) { chooseFolder = true } } } }
             if (interaction.loading || interaction.error != null || (interaction.value != null && listOf(interaction.value?.liked, interaction.value?.watchLater, interaction.value?.favorite, interaction.value?.coinCount).any { it == null })) item { Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) { Text(interaction.error ?: if (interaction.loading) "互动状态加载中" else "部分互动状态不可用", Modifier.weight(1f), color = if (interaction.error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp); if (!interaction.loading) TextButton({ vm.loadInteraction(video.aid) }) { Text(stringResource(dev.opencode.bilimobile.R.string.retry)) } } }
             if (video.pages.size > 1) item { LazyRow(contentPadding = PaddingValues(16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { items(video.pages) { page -> FilterChip(cid == page.cid, { cid = page.cid; vm.loadStream(video.bvid, cid); vm.loadDanmaku(cid) }, { Text("P${page.page} ${page.part}", maxLines = 1) }) } } }
             item { TabRow(section) { listOf("简介", "评论 ${formatCount(video.stat.reply)}").forEachIndexed { i, text ->
@@ -261,6 +308,7 @@ private sealed interface AccountDestination { data object History : AccountDesti
 @Composable private fun AccountScreen(destination: AccountDestination, vm: MainViewModel, navigate: (AccountDestination?) -> Unit, open: (String) -> Unit) {
     val history by vm.history.collectAsState(); val later by vm.watchLater.collectAsState(); val favorites by vm.favorites.collectAsState(); val resources by vm.favoriteResources.collectAsState(); val favoriteHasMore by vm.favoriteHasMore.collectAsState()
     if (destination is AccountDestination.Folder) LaunchedEffect(destination.id) { vm.loadFavoriteResources(destination.id, reset = true) }
+    LaunchedEffect(destination) { when (destination) { AccountDestination.History -> vm.refreshHistory(); AccountDestination.Later -> vm.refreshWatchLater(); AccountDestination.Favorites -> vm.refreshFavorites(); is AccountDestination.Folder -> Unit } }
     Column(Modifier.fillMaxSize()) {
         TopAppBar(title = { Text(when (destination) { AccountDestination.History -> stringResource(dev.opencode.bilimobile.R.string.history); AccountDestination.Favorites -> stringResource(dev.opencode.bilimobile.R.string.favorites); AccountDestination.Later -> stringResource(dev.opencode.bilimobile.R.string.watch_later); is AccountDestination.Folder -> destination.title }) }, navigationIcon = { IconButton({ navigate(if (destination is AccountDestination.Folder) AccountDestination.Favorites else null) }) { Icon(Icons.Default.ArrowBack, stringResource(dev.opencode.bilimobile.R.string.back)) } }, actions = { IconButton({ when (destination) { AccountDestination.History -> vm.refreshHistory(); AccountDestination.Later -> vm.refreshWatchLater(); AccountDestination.Favorites -> vm.refreshFavorites(); is AccountDestination.Folder -> vm.loadFavoriteResources(destination.id, reset = true) } }) { Icon(Icons.Default.Refresh, stringResource(dev.opencode.bilimobile.R.string.refresh)) } } )
         when (destination) {

@@ -180,7 +180,12 @@ data class PlayResult(
 ) { val videoUrl: String get() = videoUrls.first() }
 
 data class Channel(val title: String, val tid: Int? = null, val popular: Boolean = false, val live: Boolean = false)
-data class DynamicVideo(val id: String, val video: Video, val text: String = "", val time: String = "", val avatar: String = "")
+data class DynamicVideo(val id: String, val video: Video, val text: String = "", val time: String = "", val avatar: String = "", val authorMid: Long = 0)
+data class HotSearchItem(val keyword: String, val displayName: String, val heatScore: Long = 0)
+data class UpProfile(
+    val mid: Long, val name: String, val face: String, val sign: String,
+    val level: Int, val follower: Long, val following: Boolean, val archiveCount: Int
+)
 data class InteractionState(
     val liked: Boolean? = null,
     val watchLater: Boolean? = null,
