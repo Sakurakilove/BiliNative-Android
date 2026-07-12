@@ -128,6 +128,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var currentBvid = ""
     private var currentCid = 0L
     private val channelCache = mutableMapOf<Channel, List<Video>>()
+    private val channelPages = mutableMapOf<Channel, Int>()
     private val fallbackAttempts = mutableSetOf<Pair<String, Long>>()
     private var smsCooldownUntilMillis = 0L
     private var dynamicsLoadedAt = 0L
@@ -139,15 +140,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshProfile()
     }
 
-    fun refreshPopular() {
+    fun refreshPopular(force: Boolean = false) {
         if (_channel.value.live) { refreshLiveRooms(); return }
         channelJob?.cancel()
         val selected = _channel.value
+        val page = if (force && selected.tid == null) (channelPages[selected] ?: 1) % 5 + 1 else channelPages[selected] ?: 1
         channelJob = viewModelScope.launch {
         _popular.value = ContentState(value = channelCache[selected], loading = true)
         try {
-            val result = repository.channel(selected)
+            val result = repository.channel(selected, page)
             channelCache[selected] = result
+            channelPages[selected] = page
             if (_channel.value == selected) _popular.value = ContentState(value = result)
         } catch (error: CancellationException) {
             throw error
@@ -174,17 +177,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun loadDynamics() {
+    fun loadDynamics(force: Boolean = true) {
         dynamicsJob?.cancel()
         dynamicsJob = viewModelScope.launch {
         _dynamics.value = ContentState(value = _dynamics.value.value, loading = true)
-        try { _dynamics.value = ContentState(repository.dynamics()); dynamicsLoadedAt = System.currentTimeMillis() }
+        try { _dynamics.value = ContentState(repository.dynamics(force)); dynamicsLoadedAt = System.currentTimeMillis() }
         catch (error: CancellationException) { throw error }
         catch (error: Throwable) { _dynamics.value = ContentState(value = _dynamics.value.value, error = error.userMessage()) }
         }
     }
 
-    fun refreshDynamicsIfStale() { if (System.currentTimeMillis() - dynamicsLoadedAt > 60_000) loadDynamics() }
+    fun refreshDynamicsIfStale() { if (System.currentTimeMillis() - dynamicsLoadedAt > 60_000) loadDynamics(force = false) }
 
     fun loadLiveRoom(roomId: Long, quality: Int = 10000) {
         liveJob?.cancel()

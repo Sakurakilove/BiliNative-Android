@@ -40,15 +40,15 @@ class BiliRepository(context: Context) {
                 .build())
         }.build()
 
-    suspend fun popular(): List<Video> = get<ApiResponse<PopularData>>(
-        "https://api.bilibili.com/x/web-interface/popular?ps=30&pn=1"
+    suspend fun popular(page: Int = 1): List<Video> = get<ApiResponse<PopularData>>(
+        "https://api.bilibili.com/x/web-interface/popular?ps=30&pn=$page"
     ).requireData().list.filter { it.isPlayable }
 
-    suspend fun channel(channel: Channel): List<Video> {
-        if (channel.popular) return popular()
+    suspend fun channel(channel: Channel, page: Int = 1): List<Video> {
+        if (channel.popular) return popular(page)
         // The anonymous recommendation endpoint frequently rejects otherwise valid requests.
         // Popular is a stable, non-empty recommendation baseline with a distinct UI label.
-        if (channel.tid == null) return popular()
+        if (channel.tid == null) return popular(page)
         return get<ApiResponse<RankingData>>("https://api.bilibili.com/x/web-interface/ranking/v2?rid=${channel.tid}&type=all")
             .requireData().list.filter { it.isPlayable }
     }
@@ -119,8 +119,12 @@ class BiliRepository(context: Context) {
         mapOf("roomid" to roomId.toString(), "msg" to message, "rnd" to (System.currentTimeMillis() / 1000).toString(),
             "fontsize" to "25", "color" to "16777215", "mode" to "1", "bubble" to "0"))
 
-    suspend fun dynamics(): List<DynamicVideo> {
-        val root = get<JsonElement>("https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all")
+    suspend fun dynamics(forceRefresh: Boolean = false): List<DynamicVideo> {
+        val url = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all".toHttpUrl().newBuilder()
+            .addQueryParameter("timezone_offset", "-480")
+            .apply { if (forceRefresh) addQueryParameter("refresh", System.currentTimeMillis().toString()) }
+            .build().toString()
+        val root = get<JsonElement>(url)
         val response = root.jsonObject
         if (response["code"]?.jsonPrimitive?.intOrNull != 0) error(apiError(response["code"]?.jsonPrimitive?.intOrNull ?: -1))
         return response["data"]?.jsonObject?.get("items")?.jsonArray.orEmpty().mapNotNull { element ->

@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -28,6 +29,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
@@ -151,7 +154,16 @@ internal fun VideoPlayer(
         onDispose { player.removeListener(listener) }
     }
     LaunchedEffect(player, result) { playbackError = null }
-    LaunchedEffect(player) { while (true) { if (!scrubbing) position = player.currentPosition; delay(250) } }
+    LaunchedEffect(player) {
+        while (true) {
+            withFrameNanos {
+                if (!scrubbing) {
+                    val current = player.currentPosition
+                    if (current != position) position = current
+                }
+            }
+        }
+    }
     LaunchedEffect(controls, playing) { if (controls && playing) { delay(2_500); controls = false } }
     DisposableEffect(player) { onDispose { prefs.edit().putLong(key, player.currentPosition).apply(); player.release() } }
     DisposableEffect(owner, player) {
@@ -177,48 +189,45 @@ internal fun VideoPlayer(
             Box(Modifier.fillMaxWidth().height(52.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(.58f), Color.Transparent))))
             val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }
              Row(Modifier.align(Alignment.Center), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                 IconButton({ player.seekTo((player.currentPosition - 10_000).coerceAtLeast(0)) }, Modifier.size(38.dp)) { Icon(Icons.Default.Replay10, stringResource(dev.opencode.bilimobile.R.string.rewind_10), tint = Color.White, modifier = Modifier.size(22.dp)) }
+                 IconButton({ player.seekTo((player.currentPosition - 10_000).coerceAtLeast(0)) }, Modifier.size(48.dp)) { Icon(Icons.Default.Replay10, stringResource(dev.opencode.bilimobile.R.string.rewind_10), tint = Color.White, modifier = Modifier.size(22.dp)) }
                  FilledIconButton({ if (player.playbackState == Player.STATE_ENDED) { player.seekTo(0); player.play() } else if (playing) player.pause() else player.play() }, Modifier.size(48.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White.copy(.9f), contentColor = Color.Black)) {
                     Icon(if (playing) Icons.Default.Pause else if (player.playbackState == Player.STATE_ENDED) Icons.Default.Replay else Icons.Default.PlayArrow, stringResource(if (playing) dev.opencode.bilimobile.R.string.pause else dev.opencode.bilimobile.R.string.play))
                 }
-                 IconButton({ duration?.let { player.seekTo((player.currentPosition + 10_000).coerceAtMost(it)) } }, Modifier.size(38.dp), enabled = duration != null) { Icon(Icons.Default.Forward10, stringResource(dev.opencode.bilimobile.R.string.forward_10), tint = Color.White, modifier = Modifier.size(22.dp)) }
+                 IconButton({ duration?.let { player.seekTo((player.currentPosition + 10_000).coerceAtMost(it)) } }, Modifier.size(48.dp), enabled = duration != null) { Icon(Icons.Default.Forward10, stringResource(dev.opencode.bilimobile.R.string.forward_10), tint = Color.White, modifier = Modifier.size(22.dp)) }
              }
-            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(.7f)))).padding(horizontal = 8.dp, vertical = 3.dp)) {
-               Slider(
-                   value = (if (scrubbing) scrubPosition else position).coerceIn(0, duration ?: 1).toFloat(),
-                   onValueChange = { scrubbing = true; scrubPosition = it.toLong() },
-                   onValueChangeFinished = { player.seekTo(scrubPosition); position = scrubPosition; scrubbing = false },
-                   valueRange = 0f..(duration ?: 1).toFloat(), enabled = duration != null,
-                   modifier = Modifier.fillMaxWidth().heightIn(min = 40.dp),
-                   colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color.White.copy(.3f))
-               )
-              Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("${formatTime(position)} / ${duration?.let(::formatTime) ?: "--:--"}", color = Color.White, fontSize = 11.sp)
-                Spacer(Modifier.weight(1f))
-                 TextButton({ showDanmaku = !showDanmaku }, contentPadding = PaddingValues(horizontal = 5.dp)) { Text(if (showDanmaku) "弹幕开" else "弹幕关", color = if (showDanmaku) Color(0xFF67D9FF) else Color.White, fontSize = 11.sp) }
-                 TextButton({ settings = true }, contentPadding = PaddingValues(horizontal = 5.dp)) { Text("弹幕设置", color = Color.White, fontSize = 11.sp) }
-               }
-              Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-             if (loggedIn) IconButton({ composeDanmaku = true }, Modifier.size(36.dp)) { Icon(Icons.Default.Edit, stringResource(dev.opencode.bilimobile.R.string.send_danmaku), tint = Color.White, modifier = Modifier.size(18.dp)) }
-             Box {
-                 TextButton({ speedMenu = true }, contentPadding = PaddingValues(horizontal = 7.dp)) { Text("${player.playbackParameters.speed}x", color = Color.White, fontSize = 11.sp) }
+             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(.82f)))).padding(top = 28.dp)) {
+               Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                 Text("${formatTime(if (scrubbing) scrubPosition else position)} / ${duration?.let(::formatTime) ?: "--:--"}", Modifier.weight(1f), color = Color.White, style = MaterialTheme.typography.labelMedium)
+                 if (loggedIn) IconButton({ composeDanmaku = true }) { Icon(Icons.Default.Edit, stringResource(dev.opencode.bilimobile.R.string.send_danmaku), tint = Color.White, modifier = Modifier.size(20.dp)) }
+                 TextButton({ showDanmaku = !showDanmaku }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("弹幕", color = if (showDanmaku) Color(0xFF67D9FF) else Color.White.copy(.65f), style = MaterialTheme.typography.labelMedium) }
+                 IconButton({ settings = true }) { Icon(Icons.Default.Tune, "弹幕设置", tint = Color.White, modifier = Modifier.size(20.dp)) }
+              Box {
+                  TextButton({ speedMenu = true }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("${player.playbackParameters.speed}x", color = Color.White, style = MaterialTheme.typography.labelMedium) }
                 DropdownMenu(speedMenu, { speedMenu = false }) {
                     listOf(.75f, 1f, 1.25f, 1.5f, 2f).forEach { value ->
                         DropdownMenuItem({ Text("${value}x") }, { player.playbackParameters = PlaybackParameters(value); speedMenu = false })
                     }
                 }
             }
-            Box {
-                 TextButton({ qualityMenu = true }, contentPadding = PaddingValues(horizontal = 7.dp)) { Text(qualityName(result.quality), color = Color.White, fontSize = 11.sp) }
+              Box {
+                  TextButton({ qualityMenu = true }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(qualityName(result.quality), color = Color.White, style = MaterialTheme.typography.labelMedium) }
                 DropdownMenu(qualityMenu, { qualityMenu = false }) {
                     result.availableQualities.distinct().sortedDescending().forEach { q ->
                         DropdownMenuItem({ Text(result.qualityLabels[q] ?: qualityName(q)) }, { qualityMenu = false; quality(q) })
                     }
                 }
             }
-             IconButton({ fullscreen = true }, Modifier.size(36.dp)) { Icon(Icons.Default.Fullscreen, stringResource(dev.opencode.bilimobile.R.string.enter_fullscreen), tint = Color.White, modifier = Modifier.size(20.dp)) }
-              }
-            }
+              IconButton({ fullscreen = true }) { Icon(Icons.Default.Fullscreen, stringResource(dev.opencode.bilimobile.R.string.enter_fullscreen), tint = Color.White, modifier = Modifier.size(21.dp)) }
+               }
+               Slider(
+                   value = (if (scrubbing) scrubPosition else position).coerceIn(0, duration ?: 1).toFloat(),
+                   onValueChange = { scrubbing = true; scrubPosition = it.toLong() },
+                   onValueChangeFinished = { player.seekTo(scrubPosition); position = scrubPosition; scrubbing = false },
+                   valueRange = 0f..(duration ?: 1).toFloat(), enabled = duration != null,
+                   modifier = Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 8.dp, vertical = 8.dp),
+                   colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color.White.copy(.35f))
+               )
+             }
           }
         }
         playbackError?.let { message -> Surface(Modifier.align(Alignment.Center), color = Color.Black.copy(.78f), shape = RoundedCornerShape(12.dp)) { Column(Modifier.padding(14.dp), horizontalAlignment = Alignment.CenterHorizontally) { Text(message, color = Color.White, fontSize = 12.sp); TextButton({ playbackError = null; player.prepare(); player.play() }) { Text(stringResource(dev.opencode.bilimobile.R.string.retry)) } } } }
@@ -294,9 +303,9 @@ private fun DanmakuOverlay(items: List<Danmaku>, position: Long, opacity: Float,
             if (item.mode in 1..3) occupied[lane] = item.time + speed.seconds / 3f
             val x = when (item.mode) { in 1..3 -> maxWidth * (1f - age / speed.seconds) - 120.dp * (age / speed.seconds); else -> (maxWidth - 120.dp) / 2 }
             val y = when (item.mode) { 4 -> maxHeight - line; 5 -> 0.dp; else -> line * lane }
-            Text(item.text, Modifier.offset { IntOffset(x.roundToPx(), y.roundToPx()) }
-                    .background(Color.Black.copy(alpha = .25f), RoundedCornerShape(4.dp)).padding(horizontal = 4.dp),
-                    color = Color(item.color or 0xff000000).copy(alpha = opacity), fontSize = font.sp.sp, maxLines = 1)
+            Text(item.text, Modifier.offset { IntOffset(x.roundToPx(), y.roundToPx()) },
+                    color = Color(item.color or 0xff000000).copy(alpha = opacity), fontSize = font.sp.sp, maxLines = 1,
+                    style = LocalTextStyle.current.copy(shadow = Shadow(Color.Black.copy(.9f), Offset(1.2f, 1.2f), 2.4f)))
         }
     }
 }
