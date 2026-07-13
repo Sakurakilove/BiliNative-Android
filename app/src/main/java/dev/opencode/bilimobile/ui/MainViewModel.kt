@@ -225,7 +225,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshPopular(force: Boolean = false) {
-        if (_channel.value.live) { refreshLiveRooms(force); return }
+        if (_channel.value.live) { refreshLiveRooms(); return }
         channelJob?.cancel()
         val selected = _channel.value
         if (!force && channelCache[selected] != null) return
@@ -277,7 +277,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         else refreshPopular()
     }
 
-    fun refreshLiveRooms(forceNew: Boolean = false) {
+    fun refreshLiveRooms() {
         liveRoomsJob?.cancel()
         val page = 1
         liveRoomsJob = viewModelScope.launch {
