@@ -12,6 +12,16 @@ A **third-party**, non-official Bilibili Android client built with Kotlin and Je
 
 ---
 
+## Screenshots
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Sakurakilove/Lumora/main/Screenshot_20260713_214906_dev.opencode.bilimobile_edit_97631082140830.jpg" width="31%" alt="BiliNative home screen" />
+  <img src="https://raw.githubusercontent.com/Sakurakilove/Lumora/main/Screenshot_20260713_214914_dev.opencode.bilimobile_edit_97636690497079.jpg" width="31%" alt="BiliNative dynamics screen" />
+  <img src="https://raw.githubusercontent.com/Sakurakilove/Lumora/main/Screenshot_20260713_214923_dev.opencode.bilimobile_edit_97641847265308.jpg" width="31%" alt="BiliNative profile screen" />
+</p>
+
+---
+
 ## Features
 
 - **Video playback**: Media3 (ExoPlayer) streaming with quality switching, scrubbing, and frame-synced danmaku rendering.
@@ -24,8 +34,9 @@ A **third-party**, non-official Bilibili Android client built with Kotlin and Je
 - **Uploader space**: View a UP's profile, uploads, and paged dynamics; logged-in users can try follow / unfollow.
 - **Interaction**: Like, coin (with explicit irreversible-cost warning), favorite (per-folder membership tracking), and watch-later, with isolated status and retry feedback.
 - **Watch history**: Progress synced to Bilibili via heartbeat reporting.
+- **Continuous browsing**: Recommendations, popular, categories, live, short videos, dynamics, search, uploader posts, favorites, and watch history automatically load subsequent content.
 - **Privacy card**: Explains direct device-to-Bilibili traffic, locally encrypted cookies/positions, and credential removal on logout.
-- **Material 3 theme**: Cold-neutral/cobalt semantic tokens, light & dark themes, adaptive phone/tablet navigation, 48dp targets, and interruptible natural motion.
+- **Editorial Material 3 UI**: A neutral paper-like light theme is the default, with charcoal hierarchy and restrained oxblood accents. System, light, and dark appearance modes are available alongside adaptive phone/tablet navigation, 48dp targets, and interruptible natural motion.
 
 ---
 
@@ -40,7 +51,7 @@ A **third-party**, non-official Bilibili Android client built with Kotlin and Je
 | Images | Coil |
 | QR | ZXing |
 | Min / Target | minSdk 26 / targetSdk 35 |
-| Version | 0.4.0 (versionCode 4) |
+| Version | 1.0.0 (versionCode 5) |
 
 ---
 
@@ -55,9 +66,8 @@ For compliance, privacy, and the "lightweight, power-saving, minimal" positionin
 
 ## Planned Features (actively iterated)
 
-- **UI rebuild**: Continuously refine the UI into a more polished, minimal design.
-- **Premium content playback**: Attempt to support Bilibili Premium (大会员) exclusive content.
-- **Anime & movie playback**: Attempt to support bangumi (番剧) and movie playback.
+- **Premium content playback**: Attempt to support Bilibili Premium (大会员) exclusive content after login.
+- **Anime & movie playback**: Attempt to support bangumi (番剧) and movie playback after login.
 
 ---
 

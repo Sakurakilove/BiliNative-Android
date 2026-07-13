@@ -12,6 +12,16 @@
 
 ---
 
+## 界面预览
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Sakurakilove/Lumora/main/Screenshot_20260713_214906_dev.opencode.bilimobile_edit_97631082140830.jpg" width="31%" alt="BiliNative 首页" />
+  <img src="https://raw.githubusercontent.com/Sakurakilove/Lumora/main/Screenshot_20260713_214914_dev.opencode.bilimobile_edit_97636690497079.jpg" width="31%" alt="BiliNative 动态页" />
+  <img src="https://raw.githubusercontent.com/Sakurakilove/Lumora/main/Screenshot_20260713_214923_dev.opencode.bilimobile_edit_97641847265308.jpg" width="31%" alt="BiliNative 个人页" />
+</p>
+
+---
+
 ## 特性
 
 - **视频播放**：基于 Media3 (ExoPlayer) 的流媒体播放，支持清晰度切换、进度控制与帧同步弹幕渲染。
@@ -24,8 +34,9 @@
 - **UP 主空间**：进入 UP 主资料、投稿和动态分页；登录后可尝试关注 / 取消关注。
 - **互动**：点赞、投币（明确不可逆成本提示）、收藏（按分组的成员关系追踪）、稍后再看，状态隔离且失败可重试。
 - **观看历史**：通过心跳上报与 Bilibili 服务端同步观看进度。
+- **连续浏览**：推荐、热门、分区、直播、短视频、动态、搜索、UP 投稿、收藏与观看历史均支持自动加载后续内容。
 - **隐私卡片**：明确说明设备直连 Bilibili、本地加密 Cookie 与播放进度、登出清除凭证。
-- **Material 3 主题**：冷灰与钴蓝语义令牌、浅色与深色双主题、手机底部导航与平板导航栏、48dp 触控，以及可中断的自然动效。
+- **编辑式 Material 3 UI**：以中性纸面浅色为默认视觉，使用炭黑与克制酒红建立层级；提供跟随系统、浅色、深色三档外观，适配手机与平板导航、48dp 触控及可中断自然动效。
 
 ---
 
@@ -40,7 +51,7 @@
 | 图片 | Coil |
 | 二维码 | ZXing |
 | 最低 / 目标 | minSdk 26 / targetSdk 35 |
-| 版本 | 0.4.0（versionCode 4） |
+| 版本 | 1.0.0（versionCode 5） |
 
 ---
 
@@ -55,7 +66,6 @@
 
 ## 待开发功能（持续迭代中）
 
-- **UI 重构**：持续推进更精致、简洁的界面重构，提升整体质感。
 - **大会员内容播放**：尝试支持大会员专享内容的播放（登陆后）。
 - **动漫与电影播放**：尝试支持番剧、电影等版权内容的播放（登陆后）。
 

@@ -4,7 +4,12 @@ package dev.opencode.bilimobile.ui
 
 import android.app.Activity
 import android.content.pm.ActivityInfo
+import android.graphics.drawable.ColorDrawable
+import android.os.Build
 import android.os.SystemClock
+import android.view.View
+import android.view.ViewTreeObserver
+import android.view.WindowManager
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -64,6 +69,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import dev.opencode.bilimobile.data.Danmaku
 import dev.opencode.bilimobile.data.DanmakuResult
 import dev.opencode.bilimobile.data.PlayResult
@@ -243,29 +250,66 @@ internal fun VideoPlayer(
         playbackError?.let { message -> Surface(Modifier.align(Alignment.Center), color = Color.Black.copy(.78f), shape = RoundedCornerShape(12.dp)) { Column(Modifier.padding(14.dp), horizontalAlignment = Alignment.CenterHorizontally) { Text(message, color = Color.White, fontSize = 12.sp); TextButton({ playbackError = null; player.prepare(); player.play() }) { Text(stringResource(dev.opencode.bilimobile.R.string.retry)) } } } }
       }
     }
-    if (fullscreen) Dialog({ fullscreen = false }, DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        val view = LocalView.current
-        DisposableEffect(Unit) {
-            val activity = context as? Activity
-            val oldOrientation = activity?.requestedOrientation
-            val window = (view.parent as? DialogWindowProvider)?.window
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-            window?.let { WindowCompat.getInsetsController(it, it.decorView).hide(androidx.core.view.WindowInsetsCompat.Type.systemBars()) }
-            onDispose {
-                window?.let { WindowCompat.getInsetsController(it, it.decorView).show(androidx.core.view.WindowInsetsCompat.Type.systemBars()) }
-                if (oldOrientation != null) activity?.requestedOrientation = oldOrientation
-            }
-        }
-        content()
-    } else {
-        content()
-    }
+    if (fullscreen) ImmersivePlayerDialog(controls, { fullscreen = false }, content) else content()
     if (composeDanmaku) AlertDialog(onDismissRequest = { if (!danmakuPosting.loading) composeDanmaku = false },
         title = { Text(stringResource(dev.opencode.bilimobile.R.string.send_danmaku)) },
         text = { Column { OutlinedTextField(danmakuText, { danmakuText = it.take(100) }, singleLine = true); danmakuPosting.error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) } } },
         confirmButton = { TextButton({ sendDanmaku(danmakuText, position) { ok -> if (ok) { danmakuText = ""; composeDanmaku = false } } }, enabled = danmakuText.isNotBlank() && !danmakuPosting.loading) { Text(if (danmakuPosting.loading) stringResource(dev.opencode.bilimobile.R.string.loading) else stringResource(dev.opencode.bilimobile.R.string.send)) } },
         dismissButton = { if (danmakuPosting.error?.contains("刷新确认") == true) TextButton(confirmDanmakuAfterRefresh) { Text("刷新确认") } else TextButton({ composeDanmaku = false }, enabled = !danmakuPosting.loading) { Text(stringResource(dev.opencode.bilimobile.R.string.cancel)) } })
     if (settings) DanmakuSettings(showDanmaku, { showDanmaku = it }, opacity, { opacity = it }, font, { font = it }, danmakuSpeed, { danmakuSpeed = it }, area, { area = it }, maximumLanes, { maximumLanes = it }, scrolling, { scrolling = it }, topMode, { topMode = it }, bottomMode, { bottomMode = it }, danmaku, retryDanmaku) { settings = false }
+}
+
+@Composable
+private fun ImmersivePlayerDialog(controls: Boolean, dismiss: () -> Unit, content: @Composable () -> Unit) {
+    val context = LocalContext.current
+    val owner = LocalLifecycleOwner.current
+    Dialog(dismiss, DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        val view = LocalView.current
+        val activity = context as? Activity
+        val window = (view.parent as? DialogWindowProvider)?.window
+        fun hideSystemBars() { window?.let {
+            WindowCompat.getInsetsController(it, it.decorView).apply {
+                systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                hide(WindowInsetsCompat.Type.systemBars())
+            }
+            @Suppress("DEPRECATION")
+            it.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        } }
+        DisposableEffect(window, owner) {
+            val restoreOrientation = activity?.requestedOrientation
+                ?.takeUnless { it == ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE }
+                ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            window?.let {
+                WindowCompat.setDecorFitsSystemWindows(it, false)
+                it.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
+                it.setBackgroundDrawable(ColorDrawable(android.graphics.Color.BLACK))
+                @Suppress("DEPRECATION")
+                run { it.statusBarColor = android.graphics.Color.TRANSPARENT; it.navigationBarColor = android.graphics.Color.TRANSPARENT }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) it.attributes = it.attributes.apply {
+                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    it.isStatusBarContrastEnforced = false; it.isNavigationBarContrastEnforced = false
+                }
+            }
+            hideSystemBars()
+            val focusListener = ViewTreeObserver.OnWindowFocusChangeListener { hasFocus -> if (hasFocus) hideSystemBars() }
+            window?.decorView?.viewTreeObserver?.addOnWindowFocusChangeListener(focusListener)
+            val lifecycleObserver = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) hideSystemBars() }
+            owner.lifecycle.addObserver(lifecycleObserver)
+            onDispose {
+                window?.decorView?.viewTreeObserver?.takeIf { it.isAlive }?.removeOnWindowFocusChangeListener(focusListener)
+                owner.lifecycle.removeObserver(lifecycleObserver)
+                activity?.requestedOrientation = restoreOrientation
+            }
+        }
+        LaunchedEffect(controls) { hideSystemBars() }
+        Box(Modifier.fillMaxSize().background(Color.Black)) { content() }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -422,9 +466,11 @@ private fun formatTime(value: Long): String { val seconds = (value.coerceAtLeast
 @Composable
 internal fun LivePlayer(info: LivePlayInfo, headers: Map<String, String>, selectQuality: (Int) -> Unit) {
     val context = LocalContext.current
+    val owner = LocalLifecycleOwner.current
     var controls by remember { mutableStateOf(false) }; var playing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }; var qualityMenu by remember { mutableStateOf(false) }
     var fullscreen by rememberSaveable { mutableStateOf(false) }
+    var resumeAfterPause by remember { mutableStateOf(false) }
     var candidateIndex by remember(info) { mutableIntStateOf(0) }
     val selected = info.qualities.getOrNull(candidateIndex) ?: info.default ?: return
     val player = remember(selected.url) {
@@ -456,6 +502,15 @@ internal fun LivePlayer(info: LivePlayInfo, headers: Map<String, String>, select
             if (candidateIndex + 1 < info.qualities.size) candidateIndex++ else error = "直播线路连接失败，请重试"
         }
     }; player.addListener(listener); onDispose { player.removeListener(listener); player.release() } }
+    DisposableEffect(owner, player) {
+        val observer = LifecycleEventObserver { _, event -> when (event) {
+            Lifecycle.Event.ON_PAUSE -> { resumeAfterPause = player.playWhenReady; player.pause() }
+            Lifecycle.Event.ON_RESUME -> if (resumeAfterPause) player.play()
+            else -> Unit
+        } }
+        owner.lifecycle.addObserver(observer)
+        onDispose { owner.lifecycle.removeObserver(observer) }
+    }
     LaunchedEffect(player) {
         var previous = -1L; var stalled = 0
         while (true) {
@@ -475,9 +530,9 @@ internal fun LivePlayer(info: LivePlayInfo, headers: Map<String, String>, select
         AndroidView({ PlayerView(it).apply { this.player = player; useController = false } }, Modifier.fillMaxSize(), onRelease = { it.player = null })
         AnimatedVisibility(controls, enter = fadeIn(tween(140)), exit = fadeOut(tween(100))) { Box(Modifier.fillMaxSize()) {
             FilledIconButton({ if (playing) player.pause() else player.play() }, Modifier.align(Alignment.Center).size(48.dp)) { Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, if (playing) "暂停直播" else "播放直播") }
-            Row(Modifier.align(Alignment.BottomEnd).padding(6.dp), verticalAlignment = Alignment.CenterVertically) { Box { TextButton({ qualityMenu = true }) { Text("${selected.name} · ${selected.format}", color = Color.White) }; DropdownMenu(qualityMenu, { qualityMenu = false }) { info.qualities.distinctBy { it.quality }.forEach { q -> DropdownMenuItem({ Text(q.name) }, { qualityMenu = false; selectQuality(q.quality) }) } } }; IconButton({ fullscreen = true }) { Icon(Icons.Default.Fullscreen, "直播全屏", tint = Color.White) } }
+            Row(Modifier.align(Alignment.BottomEnd).padding(6.dp), verticalAlignment = Alignment.CenterVertically) { Box { TextButton({ qualityMenu = true }) { Text("${selected.name} · ${selected.format}", color = Color.White) }; DropdownMenu(qualityMenu, { qualityMenu = false }) { info.qualities.distinctBy { it.quality }.forEach { q -> DropdownMenuItem({ Text(q.name) }, { qualityMenu = false; selectQuality(q.quality) }) } } }; IconButton({ fullscreen = !fullscreen }) { Icon(if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen, if (fullscreen) "退出直播全屏" else "直播全屏", tint = Color.White) } }
         } }
         error?.let { Surface(Modifier.align(Alignment.Center), color = Color.Black.copy(.8f), shape = RoundedCornerShape(12.dp)) { Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) { Text(it, color = Color.White); TextButton({ error = null; player.prepare(); player.play() }) { Text("重试") } } } }
     } }
-    if (fullscreen) Dialog({ fullscreen = false }, DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) { content() } else content()
+    if (fullscreen) ImmersivePlayerDialog(controls, { fullscreen = false }, content) else content()
 }
