@@ -40,6 +40,7 @@ data class SearchVideo(
 data class Video(
     val bvid: String = "",
     val aid: Long = 0,
+    @SerialName("id") val recommendationId: Long = 0,
     val cid: Long = 0,
     val title: String = "",
     val pic: String = "",
@@ -57,6 +58,7 @@ data class Video(
     val dimension: Dimension = Dimension()
 ) {
     val creator: String get() = owner.name.ifBlank { author }
+    val effectiveAid: Long get() = aid.takeIf { it > 0 } ?: recommendationId
     val views: Long get() = stat.view.takeIf { it > 0 } ?: play
     val coverUrl: String get() = when {
         pic.startsWith("//") -> "https:$pic"
@@ -176,6 +178,18 @@ sealed interface LoginState {
 }
 @Serializable data class FavoriteResourceCount(val play: Long = 0)
 @Serializable data class CoinData(val multiply: Int = 0)
+
+@Serializable data class FollowingData(
+    val list: List<FollowingUser>? = emptyList(), val total: Int = 0,
+    val re_version: Long = 0
+)
+@Serializable data class FollowingUser(
+    val mid: Long = 0, val uname: String = "", val face: String = "", val sign: String = "",
+    val attribute: Int = 0, val mtime: Long = 0, val special: Int = 0,
+    val official_verify: OfficialVerify = OfficialVerify()
+)
+@Serializable data class OfficialVerify(val type: Int = -1, val desc: String = "")
+data class FollowingPage(val items: List<FollowingUser>, val total: Int, val hasMore: Boolean)
 
 data class PlayResult(
     val videoUrls: List<String>, val audioUrl: String? = null, val quality: Int,

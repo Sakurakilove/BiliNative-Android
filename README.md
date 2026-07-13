@@ -51,7 +51,7 @@
 | 图片 | Coil |
 | 二维码 | ZXing |
 | 最低 / 目标 | minSdk 26 / targetSdk 35 |
-| 版本 | 1.0.0（versionCode 5） |
+| 版本 | 1.1.0（versionCode 6） |
 
 ---
 

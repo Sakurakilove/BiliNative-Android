@@ -51,7 +51,7 @@ A **third-party**, non-official Bilibili Android client built with Kotlin and Je
 | Images | Coil |
 | QR | ZXing |
 | Min / Target | minSdk 26 / targetSdk 35 |
-| Version | 1.0.0 (versionCode 5) |
+| Version | 1.1.0 (versionCode 6) |
 
 ---
 

@@ -52,27 +52,26 @@ class BiliRepository(context: Context) {
     suspend fun channel(channel: Channel, page: Int = 1): List<Video> {
         if (channel.short) return shortVideos(page)
         if (channel.popular) return popular(page).filterNot(Video::isShort)
-        // The anonymous recommendation endpoint frequently rejects otherwise valid requests.
-        // Popular is a stable, non-empty recommendation baseline with a distinct UI label.
-        if (channel.tid == null) return popular(page).filterNot(Video::isShort)
+        if (channel.tid == null) return recommendations(page).filterNot(Video::isShort)
         return get<ApiResponse<RegionData>>("https://api.bilibili.com/x/web-interface/newlist?type=0&ps=30&rid=${channel.tid}&pn=$page")
             .requireData().archives.filter { it.isPlayable && !it.isShort }
     }
 
+    suspend fun recommendations(page: Int = 1): List<Video> {
+        val freshIndex = page.coerceAtLeast(1)
+        val params = linkedMapOf("fresh_type" to "3", "version" to "1", "ps" to "30",
+            "fresh_idx" to freshIndex.toString(), "fresh_idx_1h" to freshIndex.toString(),
+            "homepage_ver" to "1", "feed_version" to "V8")
+        val nav = profile()
+        val signed = if (nav.wbi_img.img_url.isNotBlank()) signWbi(params, nav.wbi_img) else params
+        val builder = "https://api.bilibili.com/x/web-interface/wbi/index/top/feed/rcmd".toHttpUrl().newBuilder()
+        signed.forEach { (key, value) -> builder.addQueryParameter(key, value) }
+        return get<ApiResponse<RecommendData>>(builder.build().toString()).requireData().item
+            .filter(Video::isPlayable)
+    }
+
     suspend fun shortVideos(page: Int = 1): List<Video> = coroutineScope {
-        val recommendation = async {
-            runCatching {
-                val freshIndex = page.coerceAtLeast(1)
-                val params = linkedMapOf("fresh_type" to "3", "version" to "1", "ps" to "30",
-                    "fresh_idx" to freshIndex.toString(), "fresh_idx_1h" to freshIndex.toString(),
-                    "homepage_ver" to "1", "feed_version" to "V8")
-                val nav = profile()
-                val signed = if (nav.wbi_img.img_url.isNotBlank()) signWbi(params, nav.wbi_img) else params
-                val builder = "https://api.bilibili.com/x/web-interface/wbi/index/top/feed/rcmd".toHttpUrl().newBuilder()
-                signed.forEach { (key, value) -> builder.addQueryParameter(key, value) }
-                get<ApiResponse<RecommendData>>(builder.build().toString()).requireData().item
-            }.getOrDefault(emptyList())
-        }
+        val recommendation = async { runCatching { recommendations(page) }.getOrDefault(emptyList()) }
         val firstPopularPage = (page.coerceAtLeast(1) - 1) * 3 + 1
         val popularPages = (firstPopularPage until firstPopularPage + 3).map { popularPage -> async { runCatching { popular(popularPage) }.getOrDefault(emptyList()) } }
         (recommendation.await() + popularPages.awaitAll().flatten())
@@ -305,7 +304,7 @@ class BiliRepository(context: Context) {
             .addQueryParameter("ps", "20").build().toString()
     ).requireData()
 
-    suspend fun playUrl(bvid: String, cid: Long, quality: Int = 64, forceDash: Boolean = false): PlayResult {
+    suspend fun playUrl(bvid: String, cid: Long, quality: Int = 80, forceDash: Boolean = false): PlayResult {
         fun requestUrl(fnval: String, platform: String? = null) = "https://api.bilibili.com/x/player/playurl".toHttpUrl().newBuilder()
             .addQueryParameter("bvid", bvid).addQueryParameter("cid", cid.toString())
             .addQueryParameter("qn", quality.toString()).addQueryParameter("fnval", fnval)
@@ -360,6 +359,22 @@ class BiliRepository(context: Context) {
         "https://api.bilibili.com/x/relation/modify",
         mapOf("fid" to mid.toString(), "act" to if (follow) "1" else "2", "re_src" to "11")
     )
+
+    suspend fun followings(mid: Long, page: Int = 1, query: String = ""): FollowingPage {
+        require(mid > 0 && page > 0)
+        val searching = query.isNotBlank()
+        val endpoint = if (searching) "https://api.bilibili.com/x/relation/followings/search"
+            else "https://api.bilibili.com/x/relation/followings"
+        val url = endpoint.toHttpUrl().newBuilder()
+            .addQueryParameter("vmid", mid.toString())
+            .addQueryParameter("pn", page.toString())
+            .addQueryParameter("ps", "50")
+            .apply { if (searching) addQueryParameter("name", query.trim()) }
+            .build().toString()
+        val data = get<ApiResponse<FollowingData>>(url).requireData()
+        val items = data.list.orEmpty().filter { it.mid > 0 }
+        return FollowingPage(items, data.total, items.isNotEmpty() && page * 50 < data.total && (!searching || page < 5))
+    }
 
     suspend fun setLike(aid: Long, add: Boolean) = post("https://api.bilibili.com/x/web-interface/archive/like",
         mapOf("aid" to aid.toString(), "like" to if (add) "1" else "2"))
@@ -561,8 +576,11 @@ class BiliRepository(context: Context) {
         -111 -> "登录状态已失效，请重新登录"
         -400 -> "请求参数有误"
         -403, -412 -> "请求被服务器限制，请稍后再试"
+        -352 -> "请求被服务器风控拦截，请稍后重试"
         -404 -> "内容不存在或已失效"
         62002, 62004 -> "视频不可见或正在审核"
+        22115 -> "该用户已隐藏关注列表"
+        22007 -> "搜索结果最多只能查看前 5 页"
         else -> "服务器暂时无法处理请求（错误码 $code）"
     }
 

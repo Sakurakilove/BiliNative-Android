@@ -32,6 +32,7 @@ import dev.opencode.bilimobile.data.Danmaku
 import dev.opencode.bilimobile.data.HotSearchItem
 import dev.opencode.bilimobile.data.UpProfile
 import dev.opencode.bilimobile.data.ShortInteractionState
+import dev.opencode.bilimobile.data.FollowingUser
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -45,9 +46,13 @@ data class ContentState<T>(
     val error: String? = null
 )
 
+enum class InteractionAction { Like, Coin, Favorite, WatchLater }
+
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = BiliRepository(application)
     private val searchPreferences = application.getSharedPreferences("search_history", 0)
+    private val feedPreferences = application.getSharedPreferences("feed_preferences", 0)
+    private val hiddenBvids = feedPreferences.getStringSet("hidden_bvids", emptySet()).orEmpty().toMutableSet()
     private val _popular = MutableStateFlow(ContentState<List<Video>>(loading = true))
     val popular = _popular.asStateFlow()
     private val _channelHasMore = MutableStateFlow(true)
@@ -87,6 +92,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val shortPlay = _shortPlay.asStateFlow()
     private val _shortInteraction = MutableStateFlow(ContentState<ShortInteractionState>())
     val shortInteraction = _shortInteraction.asStateFlow()
+    private val _pendingShortInteraction = MutableStateFlow<InteractionAction?>(null)
+    val pendingShortInteraction = _pendingShortInteraction.asStateFlow()
     private val _shortComments = MutableStateFlow(ContentState<List<Comment>>())
     val shortComments = _shortComments.asStateFlow()
     private val _shortCommentsHasMore = MutableStateFlow(false)
@@ -101,6 +108,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val profile = _profile.asStateFlow()
     private val _comments = MutableStateFlow(ContentState<List<Comment>>(value = emptyList()))
     val comments = _comments.asStateFlow()
+    private val _commentsHasMore = MutableStateFlow(false)
+    val commentsHasMore = _commentsHasMore.asStateFlow()
     private val _related = MutableStateFlow(ContentState<List<Video>>(value = emptyList()))
     val related = _related.asStateFlow()
     private val _history = MutableStateFlow(ContentState<List<HistoryItem>>())
@@ -121,6 +130,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val dynamicsLoadingMore = _dynamicsLoadingMore.asStateFlow()
     private val _interaction = MutableStateFlow(ContentState<InteractionState>())
     val interaction = _interaction.asStateFlow()
+    private val _pendingInteraction = MutableStateFlow<InteractionAction?>(null)
+    val pendingInteraction = _pendingInteraction.asStateFlow()
+    private val _cardActionMessage = MutableStateFlow<String?>(null)
+    val cardActionMessage = _cardActionMessage.asStateFlow()
+    private val _following = MutableStateFlow(ContentState<List<FollowingUser>>())
+    val following = _following.asStateFlow()
+    private val _followingTotal = MutableStateFlow(0)
+    val followingTotal = _followingTotal.asStateFlow()
+    private val _followingHasMore = MutableStateFlow(false)
+    val followingHasMore = _followingHasMore.asStateFlow()
+    private val _followingLoadingMore = MutableStateFlow(false)
+    val followingLoadingMore = _followingLoadingMore.asStateFlow()
+    private val _followingQuery = MutableStateFlow("")
+    val followingQuery = _followingQuery.asStateFlow()
     private val _replies = MutableStateFlow<Map<Long, ContentState<List<Comment>>>>(emptyMap())
     val replies = _replies.asStateFlow()
     private val _danmaku = MutableStateFlow(ContentState<DanmakuResult>())
@@ -181,6 +204,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var historyJob: Job? = null
     private var watchLaterJob: Job? = null
     private var favoritesJob: Job? = null
+    private var followingJob: Job? = null
+    private var followingSearchJob: Job? = null
     private var searchRequest = 0
     private var searchPage = 0
     private var currentSearchQuery = ""
@@ -212,6 +237,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var shortCommentPage = 0
     private var liveRoomsPage = 0
     private var historyCursor = HistoryCursor()
+    private var followingPage = 0
+    private var followingRequest = 0
+    private var currentFollowingQuery = ""
     private val shortCache = object : LinkedHashMap<String, Pair<Video, PlayResult>>(4, .75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<Video, PlayResult>>?) = size > 3
     }
@@ -228,7 +256,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_channel.value.live) { refreshLiveRooms(); return }
         channelJob?.cancel()
         val selected = _channel.value
-        if (!force && channelCache[selected] != null) return
+        if (!force && channelCache[selected] != null) {
+            _popular.value = ContentState(channelCache[selected])
+            return
+        }
         val page = if (force && selected.tid == null) (channelPages[selected] ?: 0) + 1 else 1
         channelJob = viewModelScope.launch {
             _popular.value = ContentState(value = channelCache[selected], loading = true)
@@ -239,7 +270,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     if (_channel.value == selected) { _channelHasMore.value = false; _popular.value = ContentState(value = channelCache[selected], error = "暂时没有更多新内容") }
                     return@launch
                 }
-                channelCache[selected] = result.distinctBy(Video::bvid)
+                channelCache[selected] = result.filterNot { it.bvid in hiddenBvids }.distinctBy(Video::bvid)
                 channelPages[selected] = page; channelMore[selected] = true
                 if (_channel.value == selected) { _popular.value = ContentState(value = channelCache[selected]); _channelHasMore.value = true }
             } catch (error: CancellationException) { throw error }
@@ -258,7 +289,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val incoming = repository.channel(selected, page)
                 if (_channel.value != selected) return@launch
                 val old = channelCache[selected].orEmpty()
-                val merged = (old + incoming).distinctBy(Video::bvid)
+                val merged = (old + incoming.filterNot { it.bvid in hiddenBvids }).distinctBy(Video::bvid)
                 channelCache[selected] = merged; channelPages[selected] = page
                 channelMore[selected] = incoming.isNotEmpty() && merged.size > old.size
                 _popular.value = ContentState(merged); _channelHasMore.value = channelMore[selected] == true
@@ -271,7 +302,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun selectChannel(value: Channel) {
         if (_channel.value == value) return
         _channel.value = value
-        _popular.value = ContentState(value = channelCache[value], loading = !value.live)
+        val cached = channelCache[value]
+        _popular.value = ContentState(value = cached, loading = !value.live && cached == null)
         _channelHasMore.value = channelMore[value] != false
         if (value.live) { _liveRooms.value = _liveRooms.value.copy(loading = _liveRooms.value.value == null); if (_liveRooms.value.value == null) refreshLiveRooms() }
         else refreshPopular()
@@ -479,7 +511,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _upFollowPosting.value = ContentState(loading = true)
             try {
                 repository.setFollowing(mid, desired)
-                if (mid == currentUpMid) _upFollowPosting.value = ContentState(Unit)
+                if (mid == currentUpMid) {
+                    _upFollowPosting.value = ContentState(Unit)
+                    if (!desired) { _following.value = ContentState(_following.value.value.orEmpty().filterNot { it.mid == mid }); _followingTotal.value = (_followingTotal.value - 1).coerceAtLeast(0) }
+                    else refreshFollowing()
+                }
             } catch (error: CancellationException) { _upProfile.value = ContentState(old); throw error }
             catch (error: Throwable) {
                 if (mid == currentUpMid) { _upProfile.value = ContentState(old); _upFollowPosting.value = ContentState(error = error.userMessage()) }
@@ -558,10 +594,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (shortMutationJob?.isActive == true) return
         val request = shortRequest
         shortMutationJob = viewModelScope.launch {
-            _shortInteraction.value = ContentState(old.copy(liked = !liked), loading = true)
+            _pendingShortInteraction.value = InteractionAction.Like
+            _shortInteraction.value = ContentState(old.copy(liked = !liked))
             try { repository.setLike(video.aid, !liked); if (request == shortRequest) _shortInteraction.value = ContentState(repository.shortInteraction(video.aid)) }
             catch (error: CancellationException) { throw error }
             catch (error: Throwable) { if (request == shortRequest) _shortInteraction.value = ContentState(old, error = error.userMessage()) }
+            finally { if (_pendingShortInteraction.value == InteractionAction.Like) _pendingShortInteraction.value = null }
         }
     }
 
@@ -571,7 +609,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (shortMutationJob?.isActive == true) return
         val request = shortRequest
         shortMutationJob = viewModelScope.launch {
-            _shortInteraction.value = ContentState(old, loading = true)
+            _pendingShortInteraction.value = InteractionAction.Coin
             try {
                 repository.addCoin(video.aid, video.bvid, count, like)
                 if (request == shortRequest) {
@@ -592,6 +630,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             catch (error: Throwable) { if (request == shortRequest) { _shortInteraction.value = ContentState(old, error = error.userMessage()); finished(false) } }
+            finally { if (_pendingShortInteraction.value == InteractionAction.Coin) _pendingShortInteraction.value = null }
         }
     }
 
@@ -616,11 +655,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun loadShort(video: Video): Pair<Video, PlayResult> {
         val detail = repository.details(video.bvid)
         val cid = detail.cid.takeIf { it > 0 } ?: detail.pages.firstOrNull()?.cid ?: error("当前短视频无法播放")
-        return detail to repository.playUrl(detail.bvid, cid, 64)
+        return detail to repository.playUrl(detail.bvid, cid, 80)
     }
 
     fun closeShortVideos() {
-        shortJob?.cancel(); shortInteractionReadJob?.cancel(); shortCommentJob?.cancel(); shortRequest++; _shortDetail.value = ContentState(); _shortPlay.value = ContentState(); _shortInteraction.value = ContentState(); _shortComments.value = ContentState(); _shortCommentsHasMore.value = false; shortCommentPage = 0; _shortCommentPosting.value = ContentState(); blockedShortCommentAid = 0
+        shortJob?.cancel(); shortInteractionReadJob?.cancel(); shortCommentJob?.cancel(); shortRequest++; _shortDetail.value = ContentState(); _shortPlay.value = ContentState(); _shortInteraction.value = ContentState(); _pendingShortInteraction.value = null; _shortComments.value = ContentState(); _shortCommentsHasMore.value = false; shortCommentPage = 0; _shortCommentPosting.value = ContentState(); blockedShortCommentAid = 0
     }
 
     fun loadDetails(bvid: String) {
@@ -633,6 +672,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _details.value = ContentState(loading = true)
             _playUrl.value = ContentState()
             _comments.value = ContentState(value = emptyList(), loading = true)
+            _commentsHasMore.value = false
             _related.value = ContentState(value = emptyList(), loading = true)
             _interaction.value = ContentState()
             _replies.value = emptyMap()
@@ -699,13 +739,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun toggleLike(aid: Long) = updateInteraction { state -> val current = state.liked ?: return@updateInteraction state; repository.setLike(aid, !current); repository.interaction(aid, _profile.value.value?.mid ?: error("请先登录后再试")) }
-    fun toggleWatchLater(aid: Long) = updateInteraction { state -> val current = state.watchLater ?: return@updateInteraction state; repository.setWatchLater(aid, !current); repository.interaction(aid, _profile.value.value?.mid ?: error("请先登录后再试")) }
-    fun toggleFavorite(aid: Long, folderId: Long) = updateInteraction { state ->
+    fun toggleLike(aid: Long) = updateInteraction(InteractionAction.Like) { state -> val current = state.liked ?: return@updateInteraction state; repository.setLike(aid, !current); repository.interaction(aid, _profile.value.value?.mid ?: error("请先登录后再试")) }
+    fun toggleWatchLater(aid: Long) = updateInteraction(InteractionAction.WatchLater) { state -> val current = state.watchLater ?: return@updateInteraction state; repository.setWatchLater(aid, !current); repository.interaction(aid, _profile.value.value?.mid ?: error("请先登录后再试")) }
+    fun toggleFavorite(aid: Long, folderId: Long) = updateInteraction(InteractionAction.Favorite) { state ->
         val folders = state.favoriteFolderIds ?: return@updateInteraction state
         repository.setFavorite(aid, folderId, folderId !in folders); repository.interaction(aid, _profile.value.value?.mid ?: error("请先登录后再试"))
     }
-    fun addCoin(aid: Long, bvid: String, count: Int, like: Boolean) = updateInteraction { state ->
+    fun addCoin(aid: Long, bvid: String, count: Int, like: Boolean) = updateInteraction(InteractionAction.Coin) { state ->
         repository.addCoin(aid, bvid, count, like); repository.interaction(aid, _profile.value.value?.mid ?: error("请先登录后再试"))
     }
 
@@ -741,13 +781,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun updateInteraction(action: suspend (InteractionState) -> InteractionState) {
+    private fun updateInteraction(kind: InteractionAction, action: suspend (InteractionState) -> InteractionState) {
         if (interactionJob?.isActive == true) return
         val aid = currentAid
         val request = detailsRequest
         interactionJob = viewModelScope.launch {
         val old = _interaction.value.value ?: run { _interaction.value = ContentState(error = "请先登录后再试"); return@launch }
-        _interaction.value = ContentState(old, loading = true)
+        _pendingInteraction.value = kind
         try { val result = action(old); if (request == detailsRequest && aid == currentAid) _interaction.value = ContentState(result) }
         catch (error: AmbiguousWriteException) {
             if (request == detailsRequest && aid == currentAid) {
@@ -757,10 +797,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         catch (error: Throwable) { if (request == detailsRequest && aid == currentAid) _interaction.value = ContentState(old, error = error.userMessage()) }
+        finally { if (_pendingInteraction.value == kind) _pendingInteraction.value = null }
         }
     }
 
-    fun loadStream(bvid: String, cid: Long, quality: Int = 64, forceDash: Boolean = false, resetFallback: Boolean = true) {
+    fun hideHomeVideo(bvid: String) {
+        val selected = _channel.value
+        val filtered = channelCache[selected].orEmpty().filterNot { it.bvid == bvid }
+        channelCache[selected] = filtered
+        hiddenBvids += bvid
+        feedPreferences.edit().putStringSet("hidden_bvids", hiddenBvids.toSet()).apply()
+        _popular.value = ContentState(filtered)
+        _cardActionMessage.value = "已隐藏该视频"
+    }
+
+    fun addCardToWatchLater(video: Video) {
+        val aid = video.effectiveAid
+        if (_profile.value.value?.isLogin != true) { _cardActionMessage.value = "登录后才能添加稍后再看"; return }
+        if (aid <= 0) { _cardActionMessage.value = "当前视频无法加入稍后再看"; return }
+        viewModelScope.launch {
+            try { repository.setWatchLater(aid, true); _cardActionMessage.value = "已加入稍后再看"; refreshWatchLater() }
+            catch (error: Throwable) { _cardActionMessage.value = error.userMessage() }
+        }
+    }
+
+    fun clearCardActionMessage() { _cardActionMessage.value = null }
+
+    fun loadStream(bvid: String, cid: Long, quality: Int = 80, forceDash: Boolean = false, resetFallback: Boolean = true) {
         if (bvid != currentBvid) return
         playJob?.cancel()
         val request = ++playRequest
@@ -800,7 +863,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loadComments(reset: Boolean = false) {
-        if (commentsJob?.isActive == true && !reset) return
+        if (commentsJob?.isActive == true && !reset || !reset && !_commentsHasMore.value) return
         if (reset) commentsJob?.cancel()
         val aid = currentAid
         val request = detailsRequest
@@ -809,13 +872,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val page = if (reset) 1 else commentPage + 1
         _comments.value = _comments.value.copy(loading = true, error = null)
         try {
-            val result = repository.comments(aid, page).replies.orEmpty()
+            val response = repository.comments(aid, page)
+            val result = response.replies.orEmpty()
             if (request != detailsRequest || aid != currentAid) return@launch
             val own = _pinnedOwnComment.value
             if (own != null && result.any { it.member.mid == own.member.mid && it.content.message == own.content.message }) _pinnedOwnComment.value = null
             val existing = if (reset) emptyList() else _comments.value.value.orEmpty()
             _comments.value = ContentState(value = (existing + result).distinctBy { it.rpid })
             commentPage = page
+            _commentsHasMore.value = result.isNotEmpty() && page * response.page.size < response.page.count
         } catch (error: CancellationException) { throw error }
         catch (error: Throwable) { if (request == detailsRequest && aid == currentAid) _comments.value = _comments.value.copy(loading = false, error = error.userMessage()) }
         }
@@ -841,6 +906,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshHistory()
         refreshWatchLater()
         refreshFavorites()
+        refreshFollowing()
+    }
+
+    fun refreshFollowing() = loadFollowing(reset = true)
+    fun loadMoreFollowing() = loadFollowing(reset = false)
+
+    fun setFollowingQuery(value: String) {
+        _followingQuery.value = value
+        followingSearchJob?.cancel()
+        followingSearchJob = viewModelScope.launch { delay(350); loadFollowing(value.trim(), reset = true) }
+    }
+
+    private fun loadFollowing(query: String = currentFollowingQuery, reset: Boolean) {
+        val mid = _profile.value.value?.takeIf(NavData::isLogin)?.mid ?: return
+        if (!reset && (followingJob?.isActive == true || !_followingHasMore.value)) return
+        if (reset) {
+            val normalized = query.trim()
+            val keepExisting = normalized == currentFollowingQuery
+            followingJob?.cancel(); followingPage = 0; currentFollowingQuery = normalized
+            _following.value = ContentState(value = if (keepExisting) _following.value.value else null, loading = true)
+            _followingHasMore.value = false
+        } else _followingLoadingMore.value = true
+        val request = if (reset) ++followingRequest else followingRequest
+        val page = followingPage + 1
+        followingJob = viewModelScope.launch {
+            try {
+                val result = repository.followings(mid, page, currentFollowingQuery)
+                if (request != followingRequest) return@launch
+                val old = if (page == 1) emptyList() else _following.value.value.orEmpty()
+                _following.value = ContentState((old + result.items).distinctBy(FollowingUser::mid))
+                if (currentFollowingQuery.isBlank()) _followingTotal.value = result.total
+                _followingHasMore.value = result.hasMore; followingPage = page
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (request == followingRequest) _following.value = _following.value.copy(loading = false, error = error.userMessage()) }
+            finally { _followingLoadingMore.value = false }
+        }
     }
 
     fun refreshFavorites() {
@@ -1008,16 +1109,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun logout() {
         cancelDetailJobs()
         detailsJob?.cancel(); playJob?.cancel(); dynamicsJob?.cancel(); interactionJob?.cancel(); profileJob?.cancel(); upSpaceJob?.cancel(); upVideoJob?.cancel(); upDynamicJob?.cancel(); shortJob?.cancel(); followJob?.cancel()
-        historyJob?.cancel(); watchLaterJob?.cancel(); favoritesJob?.cancel()
+        historyJob?.cancel(); watchLaterJob?.cancel(); favoritesJob?.cancel(); followingJob?.cancel(); followingSearchJob?.cancel()
         detailsRequest++; playRequest++
         favoriteJob?.cancel(); smsJob?.cancel(); favoriteGeneration++
         _history.value = ContentState()
         _watchLater.value = ContentState()
         _favorites.value = ContentState()
+        _following.value = ContentState(); _followingTotal.value = 0; _followingHasMore.value = false; _followingQuery.value = ""
+        currentFollowingQuery = ""; followingPage = 0; followingRequest++
         _dynamics.value = ContentState()
         _upDynamics.value = ContentState(); _upProfile.value = ContentState(); _upVideos.value = ContentState(); _upFollowPosting.value = ContentState()
         _shortDetail.value = ContentState(); _shortPlay.value = ContentState(); shortCache.clear()
+        _pendingShortInteraction.value = null
         _interaction.value = ContentState()
+        _pendingInteraction.value = null
         _replies.value = emptyMap()
         _danmaku.value = ContentState()
         _pinnedOwnComment.value = null; localDanmaku.clear(); closeLiveRoom()
