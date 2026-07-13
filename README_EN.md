@@ -18,14 +18,14 @@ A **third-party**, non-official Bilibili Android client built with Kotlin and Je
 - **Danmaku**: Remote danmaku (official XML hosts with automatic GZIP/DEFLATE decompression and multi-host fallback) plus local danmaku; persisted master toggle, opacity, size, speed, area, and mode filters.
 - **Live**: Media3 HLS (AVC) playback, quality selection, polling danmaku (labeled "recent"), and logged-in sending with optimistic local echo plus server confirmation.
 - **Login**: Default QR-code login; experimental +86 SMS login (**currently unavailable**: an in-app Geetest WebView was planned; phone number and code are never persisted).
-- **Home & short-video feed**: Long and short videos are separated while covers remain uniform; short videos support immersive vertical paging and next-item prefetch.
+- **Home & short-video feed**: Long and short videos are separated while covers remain uniform; short videos support vertical paging, next-item prefetch, likes, coins, and paged comments.
 - **Dynamics**: Post-login Polymer heterogeneous feed with pull-to-refresh and safe ignoring of unsupported card types.
 - **Search**: Top-level destination with trending hot search, local search history (clearable), and runtime WBI request signing.
 - **Uploader space**: View a UP's profile, uploads, and paged dynamics; logged-in users can try follow / unfollow.
 - **Interaction**: Like, coin (with explicit irreversible-cost warning), favorite (per-folder membership tracking), and watch-later, with isolated status and retry feedback.
 - **Watch history**: Progress synced to Bilibili via heartbeat reporting.
 - **Privacy card**: Explains direct device-to-Bilibili traffic, locally encrypted cookies/positions, and credential removal on logout.
-- **Material 3 theme**: Unified typography/shape tokens, light & dark themes, flattened hierarchy, and 48dp touch targets.
+- **Material 3 theme**: Cold-neutral/cobalt semantic tokens, light & dark themes, adaptive phone/tablet navigation, 48dp targets, and interruptible natural motion.
 
 ---
 
@@ -40,7 +40,7 @@ A **third-party**, non-official Bilibili Android client built with Kotlin and Je
 | Images | Coil |
 | QR | ZXing |
 | Min / Target | minSdk 26 / targetSdk 35 |
-| Version | 0.3.0 (versionCode 3) |
+| Version | 0.4.0 (versionCode 4) |
 
 ---
 

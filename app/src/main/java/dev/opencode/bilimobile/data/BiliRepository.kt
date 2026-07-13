@@ -333,6 +333,12 @@ class BiliRepository(context: Context) {
         }
     }
 
+    suspend fun shortInteraction(aid: Long): ShortInteractionState = coroutineScope {
+        val liked = async { runCatching { get<ApiResponse<Int>>("https://api.bilibili.com/x/web-interface/archive/has/like?aid=$aid").requireData() == 1 }.getOrNull() }
+        val coins = async { runCatching { get<ApiResponse<CoinData>>("https://api.bilibili.com/x/web-interface/archive/coins?aid=$aid").requireData().multiply }.getOrNull() }
+        ShortInteractionState(liked.await(), coins.await())
+    }
+
     suspend fun setFollowing(mid: Long, follow: Boolean) = post(
         "https://api.bilibili.com/x/relation/modify",
         mapOf("fid" to mid.toString(), "act" to if (follow) "1" else "2", "re_src" to "11")

@@ -197,6 +197,7 @@ data class InteractionState(
     val favoriteFolderIds: Set<Long>? = null,
     val coinCount: Int? = null
 ) { val favorite: Boolean? get() = favoriteFolderIds?.isNotEmpty() }
+data class ShortInteractionState(val liked: Boolean? = null, val coinCount: Int? = null)
 data class Danmaku(val time: Float, val mode: Int, val color: Long, val text: String)
 data class DanmakuResult(
     val items: List<Danmaku>, val usedFallback: Boolean, val source: String,

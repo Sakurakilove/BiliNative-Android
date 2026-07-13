@@ -30,6 +30,7 @@ import dev.opencode.bilimobile.data.CommentContent
 import dev.opencode.bilimobile.data.Danmaku
 import dev.opencode.bilimobile.data.HotSearchItem
 import dev.opencode.bilimobile.data.UpProfile
+import dev.opencode.bilimobile.data.ShortInteractionState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -72,6 +73,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val shortDetail = _shortDetail.asStateFlow()
     private val _shortPlay = MutableStateFlow(ContentState<PlayResult>())
     val shortPlay = _shortPlay.asStateFlow()
+    private val _shortInteraction = MutableStateFlow(ContentState<ShortInteractionState>())
+    val shortInteraction = _shortInteraction.asStateFlow()
+    private val _shortComments = MutableStateFlow(ContentState<List<Comment>>())
+    val shortComments = _shortComments.asStateFlow()
+    private val _shortCommentsHasMore = MutableStateFlow(false)
+    val shortCommentsHasMore = _shortCommentsHasMore.asStateFlow()
+    private val _shortCommentPosting = MutableStateFlow(ContentState<Unit>())
+    val shortCommentPosting = _shortCommentPosting.asStateFlow()
     private val _details = MutableStateFlow(ContentState<Video>())
     val details = _details.asStateFlow()
     private val _playUrl = MutableStateFlow(ContentState<PlayResult>())
@@ -138,6 +147,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var upDynamicJob: Job? = null
     private var shortJob: Job? = null
     private var followJob: Job? = null
+    private var shortInteractionReadJob: Job? = null
+    private var shortMutationJob: Job? = null
+    private var shortCommentJob: Job? = null
+    private var shortCommentPostingJob: Job? = null
     private val replyJobs = mutableMapOf<Long, Job>()
     private val accountJobs = mutableListOf<Job>()
     private var searchRequest = 0
@@ -162,6 +175,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var currentUpMid = 0L
     private var upDynamicOffset = ""
     private var shortRequest = 0
+    private var blockedShortCommentAid = 0L
+    private var shortCommentPage = 0
     private val shortCache = object : LinkedHashMap<String, Pair<Video, PlayResult>>(4, .75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<Video, PlayResult>>?) = size > 3
     }
@@ -351,19 +366,128 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun loadShortVideo(video: Video, next: Video? = null) {
         shortJob?.cancel()
+        shortInteractionReadJob?.cancel(); shortCommentJob?.cancel()
         val request = ++shortRequest
         shortCache[video.bvid]?.let { cached ->
             _shortDetail.value = ContentState(cached.first); _shortPlay.value = ContentState(cached.second)
         } ?: run { _shortDetail.value = ContentState(loading = true); _shortPlay.value = ContentState(loading = true) }
+        _shortInteraction.value = ContentState(); _shortComments.value = ContentState(); _shortCommentsHasMore.value = false; shortCommentPage = 0; _shortCommentPosting.value = ContentState()
         shortJob = viewModelScope.launch {
             try {
                 val current = shortCache[video.bvid] ?: loadShort(video)
                 shortCache[video.bvid] = current
-                if (request == shortRequest) { _shortDetail.value = ContentState(current.first); _shortPlay.value = ContentState(current.second) }
+                if (request == shortRequest) {
+                    _shortDetail.value = ContentState(current.first); _shortPlay.value = ContentState(current.second)
+                    if (blockedShortCommentAid == current.first.aid) _shortCommentPosting.value = ContentState(error = "发送结果未知，请刷新确认")
+                    if (_profile.value.value?.isLogin == true) loadShortInteraction(current.first.aid, request)
+                }
                 if (next != null && next.bvid !in shortCache) runCatching { loadShort(next) }.getOrNull()?.let { shortCache[next.bvid] = it }
             } catch (error: CancellationException) { throw error }
             catch (error: Throwable) { if (request == shortRequest) { _shortDetail.value = ContentState(error = error.userMessage()); _shortPlay.value = ContentState(error = error.userMessage()) } }
         }
+    }
+
+    private fun loadShortInteraction(aid: Long, request: Int = shortRequest) {
+        shortInteractionReadJob?.cancel()
+        shortInteractionReadJob = viewModelScope.launch {
+            _shortInteraction.value = ContentState(loading = true)
+            try { val value = repository.shortInteraction(aid); if (request == shortRequest) _shortInteraction.value = ContentState(value) }
+            catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (request == shortRequest) _shortInteraction.value = ContentState(error = error.userMessage()) }
+        }
+    }
+
+    fun refreshShortInteraction() {
+        val aid = _shortDetail.value.value?.aid ?: return
+        loadShortInteraction(aid, shortRequest)
+    }
+
+    fun loadShortComments(reset: Boolean = true) {
+        val aid = _shortDetail.value.value?.aid ?: return
+        loadShortComments(aid, shortRequest, reset)
+    }
+
+    private fun loadShortComments(aid: Long, request: Int, reset: Boolean = true, clearBlockedOnSuccess: Boolean = false) {
+        if (shortCommentJob?.isActive == true && !reset) return
+        shortCommentJob?.cancel()
+        shortCommentJob = viewModelScope.launch {
+            val page = if (reset) 1 else shortCommentPage + 1
+            _shortComments.value = _shortComments.value.copy(loading = true, error = null)
+            try {
+                val response = repository.comments(aid, page)
+                if (request == shortRequest) {
+                    val old = if (reset) emptyList() else _shortComments.value.value.orEmpty()
+                    val merged = (old + response.replies.orEmpty()).distinctBy(Comment::rpid)
+                    _shortComments.value = ContentState(merged); shortCommentPage = page
+                    _shortCommentsHasMore.value = merged.size < response.page.count && response.replies.orEmpty().isNotEmpty()
+                    if (clearBlockedOnSuccess && blockedShortCommentAid == aid) { blockedShortCommentAid = 0; _shortCommentPosting.value = ContentState() }
+                }
+            }
+            catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (request == shortRequest) _shortComments.value = _shortComments.value.copy(loading = false, error = error.userMessage()) }
+        }
+    }
+
+    fun toggleShortLike() {
+        val video = _shortDetail.value.value ?: return
+        val old = _shortInteraction.value.value ?: return
+        val liked = old.liked ?: return
+        if (shortMutationJob?.isActive == true) return
+        val request = shortRequest
+        shortMutationJob = viewModelScope.launch {
+            _shortInteraction.value = ContentState(old.copy(liked = !liked), loading = true)
+            try { repository.setLike(video.aid, !liked); if (request == shortRequest) _shortInteraction.value = ContentState(repository.shortInteraction(video.aid)) }
+            catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (request == shortRequest) _shortInteraction.value = ContentState(old, error = error.userMessage()) }
+        }
+    }
+
+    fun addShortCoin(count: Int, like: Boolean, finished: (Boolean) -> Unit) {
+        val video = _shortDetail.value.value ?: return
+        val old = _shortInteraction.value.value ?: return
+        if (shortMutationJob?.isActive == true) return
+        val request = shortRequest
+        shortMutationJob = viewModelScope.launch {
+            _shortInteraction.value = ContentState(old, loading = true)
+            try {
+                repository.addCoin(video.aid, video.bvid, count, like)
+                if (request == shortRequest) {
+                    val optimistic = old.copy(coinCount = (old.coinCount ?: 0) + count, liked = if (like) true else old.liked)
+                    val reconciled = runCatching { repository.shortInteraction(video.aid) }.getOrNull()?.takeIf { it.coinCount != null }
+                    _shortInteraction.value = ContentState(reconciled ?: optimistic, error = if (reconciled == null) "投币成功，状态稍后同步" else null)
+                    finished(true)
+                }
+            }
+            catch (error: CancellationException) { throw error }
+            catch (error: AmbiguousWriteException) {
+                if (request == shortRequest) {
+                    val expected = (old.coinCount ?: 0) + count
+                    val reconciled = runCatching { repository.shortInteraction(video.aid) }.getOrNull()
+                    val confirmed = reconciled?.coinCount?.let { it >= expected } == true
+                    _shortInteraction.value = if (confirmed) ContentState(reconciled!!, error = "操作结果已重新同步") else ContentState(old, error = "操作结果未知，请刷新确认")
+                    finished(confirmed)
+                }
+            }
+            catch (error: Throwable) { if (request == shortRequest) { _shortInteraction.value = ContentState(old, error = error.userMessage()); finished(false) } }
+        }
+    }
+
+    fun postShortComment(message: String, finished: (Boolean) -> Unit) {
+        val video = _shortDetail.value.value ?: return
+        val text = message.trim()
+        if (text.length !in 1..1000 || _shortCommentPosting.value.loading || blockedShortCommentAid == video.aid) return
+        val request = shortRequest
+        shortCommentPostingJob = viewModelScope.launch {
+            _shortCommentPosting.value = ContentState(loading = true)
+            try { repository.postComment(video.aid, text); if (request == shortRequest) { _shortCommentPosting.value = ContentState(Unit); loadShortComments(video.aid, request, reset = true); finished(true) } }
+            catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (request == shortRequest) { if (error is AmbiguousWriteException) blockedShortCommentAid = video.aid; _shortCommentPosting.value = ContentState(error = if (error is AmbiguousWriteException) "发送结果未知，请刷新确认" else error.userMessage()); finished(false) } }
+        }
+    }
+
+    fun confirmShortCommentRefresh() {
+        val aid = _shortDetail.value.value?.aid ?: return
+        loadShortComments(aid, shortRequest, reset = true, clearBlockedOnSuccess = true)
     }
 
     private suspend fun loadShort(video: Video): Pair<Video, PlayResult> {
@@ -373,7 +497,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun closeShortVideos() {
-        shortJob?.cancel(); shortRequest++; _shortDetail.value = ContentState(); _shortPlay.value = ContentState()
+        shortJob?.cancel(); shortInteractionReadJob?.cancel(); shortCommentJob?.cancel(); shortRequest++; _shortDetail.value = ContentState(); _shortPlay.value = ContentState(); _shortInteraction.value = ContentState(); _shortComments.value = ContentState(); _shortCommentsHasMore.value = false; shortCommentPage = 0; _shortCommentPosting.value = ContentState(); blockedShortCommentAid = 0
     }
 
     fun loadDetails(bvid: String) {

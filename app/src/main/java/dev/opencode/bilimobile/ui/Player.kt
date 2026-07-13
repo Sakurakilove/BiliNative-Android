@@ -8,6 +8,7 @@ import android.os.SystemClock
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -197,7 +198,7 @@ internal fun VideoPlayer(
             onRelease = { it.player = null })
         if (showDanmaku) FrameSyncedDanmaku(player, danmaku.value?.items.orEmpty(), opacity, font, danmakuSpeed, area, maximumLanes, scrolling, topMode, bottomMode, controls)
         if (buffering) CircularProgressIndicator(Modifier.align(Alignment.Center).size(34.dp), color = Color.White, strokeWidth = 3.dp)
-        AnimatedVisibility(controls, Modifier.fillMaxSize(), enter = fadeIn(), exit = fadeOut()) {
+        AnimatedVisibility(controls, Modifier.fillMaxSize(), enter = fadeIn(tween(140)), exit = fadeOut(tween(100))) {
           Box(Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxWidth().height(52.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(.58f), Color.Transparent))))
             val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }
@@ -294,6 +295,7 @@ internal fun ShortVideoPlayer(
     val startTs = remember(key) { System.currentTimeMillis() / 1000 }
     val startElapsed = remember(key) { SystemClock.elapsedRealtime() }
     val currentReport by rememberUpdatedState(reportWatch)
+    val currentActive by rememberUpdatedState(active)
     val player = remember(key, result.videoUrls, result.audioUrl) {
         ExoPlayer.Builder(context).setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(3_000, 10_000, 700, 1_500).build()).build().apply {
             val factory = DefaultHttpDataSource.Factory().setDefaultRequestProperties(headers)
@@ -305,6 +307,8 @@ internal fun ShortVideoPlayer(
         }
     }
     var playing by remember(player) { mutableStateOf(player.isPlaying) }
+    var resumeAfterPause by remember(player) { mutableStateOf(false) }
+    var userWantsPlay by remember(player) { mutableStateOf(true) }
     DisposableEffect(player) {
         val listener = object : Player.Listener { override fun onIsPlayingChanged(value: Boolean) { playing = value } }
         player.addListener(listener)
@@ -313,18 +317,18 @@ internal fun ShortVideoPlayer(
             player.removeListener(listener); player.release()
         }
     }
-    LaunchedEffect(player, active) { if (active) player.play() else player.pause() }
+    LaunchedEffect(player, active) { if (active && userWantsPlay) player.play() else player.pause() }
     LaunchedEffect(player) {
         currentReport(player.currentPosition / 1000, 0, startTs, 1)
         while (true) { delay(15_000); if (player.isPlaying && owner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) currentReport(player.currentPosition / 1000, (SystemClock.elapsedRealtime() - startElapsed) / 1000, startTs, 0) }
     }
     DisposableEffect(owner, player) {
-        val observer = LifecycleEventObserver { _, event -> when (event) { Lifecycle.Event.ON_PAUSE -> player.pause(); Lifecycle.Event.ON_RESUME -> if (active) player.play(); else -> Unit } }
+        val observer = LifecycleEventObserver { _, event -> when (event) { Lifecycle.Event.ON_PAUSE -> { resumeAfterPause = player.isPlaying; player.pause() }; Lifecycle.Event.ON_RESUME -> if (currentActive && resumeAfterPause && userWantsPlay) player.play(); else -> Unit } }
         owner.lifecycle.addObserver(observer); onDispose { owner.lifecycle.removeObserver(observer) }
     }
-    Box(Modifier.fillMaxSize().background(Color.Black).clickable { if (playing) player.pause() else player.play() }) {
+    Box(Modifier.fillMaxSize().background(Color.Black).clickable { userWantsPlay = !playing; if (playing) player.pause() else if (active) player.play() }) {
         AndroidView({ PlayerView(it).apply { this.player = player; useController = false; resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM } }, Modifier.fillMaxSize(), onRelease = { it.player = null })
-        if (!playing) FilledIconButton({ player.play() }, Modifier.align(Alignment.Center).size(56.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.Black.copy(.52f), contentColor = Color.White)) { Icon(Icons.Default.PlayArrow, "播放短视频") }
+        AnimatedVisibility(!playing, Modifier.align(Alignment.Center), enter = fadeIn(tween(120)), exit = fadeOut(tween(90))) { FilledIconButton({ userWantsPlay = true; if (active) player.play() }, Modifier.size(56.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.Black.copy(.52f), contentColor = Color.White)) { Icon(Icons.Default.PlayArrow, "播放短视频") } }
     }
 }
 
@@ -443,7 +447,7 @@ internal fun LivePlayer(info: LivePlayInfo, headers: Map<String, String>, select
     LaunchedEffect(controls, playing) { if (controls && playing) { delay(2_500); controls = false } }
     val content: @Composable () -> Unit = { Box(Modifier.fillMaxSize().background(Color.Black).clickable { controls = !controls }) {
         AndroidView({ PlayerView(it).apply { this.player = player; useController = false } }, Modifier.fillMaxSize(), onRelease = { it.player = null })
-        AnimatedVisibility(controls, enter = fadeIn(), exit = fadeOut()) { Box(Modifier.fillMaxSize()) {
+        AnimatedVisibility(controls, enter = fadeIn(tween(140)), exit = fadeOut(tween(100))) { Box(Modifier.fillMaxSize()) {
             FilledIconButton({ if (playing) player.pause() else player.play() }, Modifier.align(Alignment.Center).size(48.dp)) { Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, if (playing) "暂停直播" else "播放直播") }
             Row(Modifier.align(Alignment.BottomEnd).padding(6.dp), verticalAlignment = Alignment.CenterVertically) { Box { TextButton({ qualityMenu = true }) { Text("${selected.name} · ${selected.format}", color = Color.White) }; DropdownMenu(qualityMenu, { qualityMenu = false }) { info.qualities.distinctBy { it.quality }.forEach { q -> DropdownMenuItem({ Text(q.name) }, { qualityMenu = false; selectQuality(q.quality) }) } } }; IconButton({ fullscreen = true }) { Icon(Icons.Default.Fullscreen, "直播全屏", tint = Color.White) } }
         } }

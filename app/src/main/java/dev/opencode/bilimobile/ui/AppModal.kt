@@ -24,14 +24,14 @@ internal fun AppModal(
 ) {
     Dialog(dismiss, DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
-            Modifier.fillMaxWidth().padding(18.dp).widthIn(max = 430.dp).heightIn(max = 680.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp).widthIn(max = 430.dp).heightIn(max = 680.dp),
             shape = MaterialTheme.shapes.extraLarge,
             color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 8.dp
+            tonalElevation = 2.dp
         ) {
-            Column(Modifier.padding(horizontal = 22.dp, vertical = 18.dp)) {
+            Column(Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(title, Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
+                    Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                     IconButton(dismiss) { Icon(Icons.Default.Close, "关闭") }
                 }
                 Spacer(Modifier.height(10.dp))
