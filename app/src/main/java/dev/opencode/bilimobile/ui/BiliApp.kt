@@ -304,6 +304,7 @@ private fun destinationDepth(value: List<Any?>): Int = when { (value[3] as Long)
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun ShortVideoScreen(videos: List<Video>, initialIndex: Int, vm: MainViewModel, close: () -> Unit, openUp: (Long) -> Unit) {
     if (videos.isEmpty()) { Empty("暂无可刷短视频"); return }
     val pager = rememberPagerState(initialPage = initialIndex.coerceIn(videos.indices), pageCount = { videos.size })
