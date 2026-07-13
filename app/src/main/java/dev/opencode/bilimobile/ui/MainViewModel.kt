@@ -15,6 +15,7 @@ import dev.opencode.bilimobile.data.Channel
 import dev.opencode.bilimobile.data.DanmakuResult
 import dev.opencode.bilimobile.data.FavoriteResource
 import dev.opencode.bilimobile.data.DynamicVideo
+import dev.opencode.bilimobile.data.DynamicPage
 import dev.opencode.bilimobile.data.InteractionState
 import dev.opencode.bilimobile.data.AmbiguousWriteException
 import dev.opencode.bilimobile.data.ApiBusinessException
@@ -35,6 +36,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 
 data class ContentState<T>(
     val value: T? = null,
@@ -47,7 +49,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val searchPreferences = application.getSharedPreferences("search_history", 0)
     private val _popular = MutableStateFlow(ContentState<List<Video>>(loading = true))
     val popular = _popular.asStateFlow()
-    val channels = listOf(Channel("推荐"), Channel("热门", popular = true), Channel("直播", live = true), Channel("动画", 1), Channel("游戏", 4), Channel("知识", 36), Channel("科技", 188), Channel("生活", 160))
+    val channels = listOf(Channel("推荐"), Channel("短视频", short = true), Channel("热门", popular = true), Channel("直播", live = true), Channel("动画", 1), Channel("游戏", 4), Channel("知识", 36), Channel("科技", 188), Channel("生活", 160))
     private val _channel = MutableStateFlow(channels.first())
     val channel = _channel.asStateFlow()
     private val _search = MutableStateFlow(ContentState<List<Video>>(value = emptyList()))
@@ -60,6 +62,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val upProfile = _upProfile.asStateFlow()
     private val _upVideos = MutableStateFlow(ContentState<List<Video>>())
     val upVideos = _upVideos.asStateFlow()
+    private val _upDynamics = MutableStateFlow(ContentState<List<DynamicVideo>>())
+    val upDynamics = _upDynamics.asStateFlow()
+    private val _upDynamicHasMore = MutableStateFlow(false)
+    val upDynamicHasMore = _upDynamicHasMore.asStateFlow()
+    private val _upFollowPosting = MutableStateFlow(ContentState<Unit>())
+    val upFollowPosting = _upFollowPosting.asStateFlow()
+    private val _shortDetail = MutableStateFlow(ContentState<Video>())
+    val shortDetail = _shortDetail.asStateFlow()
+    private val _shortPlay = MutableStateFlow(ContentState<PlayResult>())
+    val shortPlay = _shortPlay.asStateFlow()
     private val _details = MutableStateFlow(ContentState<Video>())
     val details = _details.asStateFlow()
     private val _playUrl = MutableStateFlow(ContentState<PlayResult>())
@@ -122,6 +134,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var commentPostingJob: Job? = null
     private var danmakuPostingJob: Job? = null
     private var smsJob: Job? = null
+    private var upSpaceJob: Job? = null
+    private var upDynamicJob: Job? = null
+    private var shortJob: Job? = null
+    private var followJob: Job? = null
     private val replyJobs = mutableMapOf<Long, Job>()
     private val accountJobs = mutableListOf<Job>()
     private var searchRequest = 0
@@ -143,6 +159,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val fallbackAttempts = mutableSetOf<Pair<String, Long>>()
     private var smsCooldownUntilMillis = 0L
     private var dynamicsLoadedAt = 0L
+    private var currentUpMid = 0L
+    private var upDynamicOffset = ""
+    private var shortRequest = 0
+    private val shortCache = object : LinkedHashMap<String, Pair<Video, PlayResult>>(4, .75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<Video, PlayResult>>?) = size > 3
+    }
     private var localCommentId = -1L
     private val localDanmaku = mutableMapOf<Long, MutableList<Danmaku>>()
 
@@ -270,15 +292,88 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loadUpSpace(mid: Long) {
+        upSpaceJob?.cancel()
+        currentUpMid = mid
         _upProfile.value = ContentState(loading = true); _upVideos.value = ContentState(loading = true)
-        viewModelScope.launch {
-            try { _upProfile.value = ContentState(repository.upProfile(mid)) }
-            catch (error: Throwable) { _upProfile.value = ContentState(error = error.userMessage()) }
+        loadUpDynamics(mid, reset = true)
+        upSpaceJob = viewModelScope.launch {
+            supervisorScope {
+                launch {
+                    try { val value = repository.upProfile(mid); if (mid == currentUpMid) _upProfile.value = ContentState(value) }
+                    catch (error: CancellationException) { throw error }
+                    catch (error: Throwable) { if (mid == currentUpMid) _upProfile.value = ContentState(error = error.userMessage()) }
+                }
+                launch {
+                    try { val value = repository.upArchives(mid); if (mid == currentUpMid) _upVideos.value = ContentState(value) }
+                    catch (error: CancellationException) { throw error }
+                    catch (error: Throwable) { if (mid == currentUpMid) _upVideos.value = ContentState(error = error.userMessage()) }
+                }
+            }
         }
-        viewModelScope.launch {
-            try { _upVideos.value = ContentState(repository.upArchives(mid)) }
-            catch (error: Throwable) { _upVideos.value = ContentState(error = error.userMessage()) }
+    }
+
+    fun loadUpDynamics(mid: Long = currentUpMid, reset: Boolean = false) {
+        if (mid <= 0 || (upDynamicJob?.isActive == true && !reset)) return
+        if (reset || mid != currentUpMid) {
+            upDynamicJob?.cancel(); currentUpMid = mid; upDynamicOffset = ""; _upDynamicHasMore.value = true
+            _upDynamics.value = ContentState(loading = true)
+        } else if (!_upDynamicHasMore.value) return
+        val requestedOffset = if (reset) "" else upDynamicOffset
+        upDynamicJob = viewModelScope.launch {
+            _upDynamics.value = _upDynamics.value.copy(loading = true, error = null)
+            try {
+                val page: DynamicPage = repository.upDynamics(mid, requestedOffset)
+                if (mid != currentUpMid) return@launch
+                val old = if (requestedOffset.isBlank()) emptyList() else _upDynamics.value.value.orEmpty()
+                _upDynamics.value = ContentState((old + page.items).distinctBy(DynamicVideo::id))
+                upDynamicOffset = page.offset; _upDynamicHasMore.value = page.hasMore && page.offset.isNotBlank()
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (mid == currentUpMid) _upDynamics.value = _upDynamics.value.copy(loading = false, error = error.userMessage()) }
         }
+    }
+
+    fun toggleFollowing(mid: Long) {
+        val old = _upProfile.value.value ?: return
+        if (old.mid != mid || followJob?.isActive == true || _profile.value.value?.isLogin != true) return
+        val desired = !old.following
+        followJob = viewModelScope.launch {
+            _upProfile.value = ContentState(old.copy(following = desired))
+            _upFollowPosting.value = ContentState(loading = true)
+            try {
+                repository.setFollowing(mid, desired)
+                if (mid == currentUpMid) _upFollowPosting.value = ContentState(Unit)
+            } catch (error: CancellationException) { _upProfile.value = ContentState(old); throw error }
+            catch (error: Throwable) {
+                if (mid == currentUpMid) { _upProfile.value = ContentState(old); _upFollowPosting.value = ContentState(error = error.userMessage()) }
+            }
+        }
+    }
+
+    fun loadShortVideo(video: Video, next: Video? = null) {
+        shortJob?.cancel()
+        val request = ++shortRequest
+        shortCache[video.bvid]?.let { cached ->
+            _shortDetail.value = ContentState(cached.first); _shortPlay.value = ContentState(cached.second)
+        } ?: run { _shortDetail.value = ContentState(loading = true); _shortPlay.value = ContentState(loading = true) }
+        shortJob = viewModelScope.launch {
+            try {
+                val current = shortCache[video.bvid] ?: loadShort(video)
+                shortCache[video.bvid] = current
+                if (request == shortRequest) { _shortDetail.value = ContentState(current.first); _shortPlay.value = ContentState(current.second) }
+                if (next != null && next.bvid !in shortCache) runCatching { loadShort(next) }.getOrNull()?.let { shortCache[next.bvid] = it }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (request == shortRequest) { _shortDetail.value = ContentState(error = error.userMessage()); _shortPlay.value = ContentState(error = error.userMessage()) } }
+        }
+    }
+
+    private suspend fun loadShort(video: Video): Pair<Video, PlayResult> {
+        val detail = repository.details(video.bvid)
+        val cid = detail.cid.takeIf { it > 0 } ?: detail.pages.firstOrNull()?.cid ?: error("当前短视频无法播放")
+        return detail to repository.playUrl(detail.bvid, cid, 64)
+    }
+
+    fun closeShortVideos() {
+        shortJob?.cancel(); shortRequest++; _shortDetail.value = ContentState(); _shortPlay.value = ContentState()
     }
 
     fun loadDetails(bvid: String) {
@@ -646,13 +741,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun logout() {
         cancelDetailJobs()
         accountJobs.forEach { it.cancel() }; accountJobs.clear()
-        detailsJob?.cancel(); playJob?.cancel(); dynamicsJob?.cancel(); interactionJob?.cancel(); profileJob?.cancel()
+        detailsJob?.cancel(); playJob?.cancel(); dynamicsJob?.cancel(); interactionJob?.cancel(); profileJob?.cancel(); upSpaceJob?.cancel(); upDynamicJob?.cancel(); shortJob?.cancel(); followJob?.cancel()
         detailsRequest++; playRequest++
         favoriteJob?.cancel(); smsJob?.cancel(); favoriteGeneration++
         _history.value = ContentState()
         _watchLater.value = ContentState()
         _favorites.value = ContentState()
         _dynamics.value = ContentState()
+        _upDynamics.value = ContentState(); _upProfile.value = ContentState(); _upVideos.value = ContentState(); _upFollowPosting.value = ContentState()
+        _shortDetail.value = ContentState(); _shortPlay.value = ContentState(); shortCache.clear()
         _interaction.value = ContentState()
         _replies.value = emptyMap()
         _danmaku.value = ContentState()

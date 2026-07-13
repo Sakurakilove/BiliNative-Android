@@ -63,8 +63,12 @@ data class Video(
         pic.startsWith("http://") -> "https://${pic.removePrefix("http://")}"
         else -> pic
     }
+    val isShort: Boolean get() = goto == "vertical_av" ||
+        (dimension.width > 0 && dimension.height > dimension.width) || duration in 1..90
     // Popular also contains bangumi, live, and other redirect-only cards that this player cannot open.
-    val isPlayable: Boolean get() = bvid.isNotBlank() && redirectUrl.isBlank() && (goto.isBlank() || goto == "av")
+    val isPlayable: Boolean get() = bvid.isNotBlank() &&
+        (goto.isBlank() || goto == "av" || goto == "vertical_av") &&
+        (redirectUrl.isBlank() || goto == "vertical_av")
 }
 
 @Serializable data class Owner(val mid: Long = 0, val name: String = "", val face: String = "")
@@ -179,8 +183,9 @@ data class PlayResult(
     val isDash: Boolean = false
 ) { val videoUrl: String get() = videoUrls.first() }
 
-data class Channel(val title: String, val tid: Int? = null, val popular: Boolean = false, val live: Boolean = false)
+data class Channel(val title: String, val tid: Int? = null, val popular: Boolean = false, val live: Boolean = false, val short: Boolean = false)
 data class DynamicVideo(val id: String, val video: Video, val text: String = "", val time: String = "", val avatar: String = "", val authorMid: Long = 0)
+data class DynamicPage(val items: List<DynamicVideo>, val offset: String = "", val hasMore: Boolean = false)
 data class HotSearchItem(val keyword: String, val displayName: String, val heatScore: Long = 0)
 data class UpProfile(
     val mid: Long, val name: String, val face: String, val sign: String,

@@ -4,10 +4,14 @@ import android.content.Context
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
@@ -46,12 +50,30 @@ class BiliRepository(context: Context) {
     ).requireData().list.filter { it.isPlayable }
 
     suspend fun channel(channel: Channel, page: Int = 1): List<Video> {
-        if (channel.popular) return popular(page)
+        if (channel.short) return shortVideos()
+        if (channel.popular) return popular(page).filterNot(Video::isShort)
         // The anonymous recommendation endpoint frequently rejects otherwise valid requests.
         // Popular is a stable, non-empty recommendation baseline with a distinct UI label.
-        if (channel.tid == null) return popular(page)
+        if (channel.tid == null) return popular(page).filterNot(Video::isShort)
         return get<ApiResponse<RankingData>>("https://api.bilibili.com/x/web-interface/ranking/v2?rid=${channel.tid}&type=all")
-            .requireData().list.filter { it.isPlayable }
+            .requireData().list.filter { it.isPlayable && !it.isShort }
+    }
+
+    suspend fun shortVideos(): List<Video> = coroutineScope {
+        val recommendation = async {
+            runCatching {
+                val params = linkedMapOf("fresh_type" to "3", "version" to "1", "ps" to "30")
+                val nav = profile()
+                val signed = if (nav.wbi_img.img_url.isNotBlank()) signWbi(params, nav.wbi_img) else params
+                val builder = "https://api.bilibili.com/x/web-interface/wbi/index/top/feed/rcmd".toHttpUrl().newBuilder()
+                signed.forEach { (key, value) -> builder.addQueryParameter(key, value) }
+                get<ApiResponse<RecommendData>>(builder.build().toString()).requireData().item
+            }.getOrDefault(emptyList())
+        }
+        val popularPages = (1..3).map { page -> async { runCatching { popular(page) }.getOrDefault(emptyList()) } }
+        (recommendation.await() + popularPages.awaitAll().flatten())
+            .filter { it.isPlayable && it.isShort }
+            .distinctBy(Video::bvid)
     }
 
     suspend fun liveRooms(): List<LiveRoomSummary> {
@@ -129,7 +151,23 @@ class BiliRepository(context: Context) {
         val root = get<JsonElement>(url)
         val response = root.jsonObject
         if (response["code"]?.jsonPrimitive?.intOrNull != 0) error(apiError(response["code"]?.jsonPrimitive?.intOrNull ?: -1))
-        return response["data"]?.jsonObject?.get("items")?.jsonArray.orEmpty().mapNotNull { element ->
+        return parseDynamics(response["data"]?.jsonObject?.get("items")?.jsonArray.orEmpty())
+    }
+
+    suspend fun upDynamics(mid: Long, offset: String = ""): DynamicPage {
+        val builder = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space".toHttpUrl().newBuilder()
+            .addQueryParameter("host_mid", mid.toString())
+            .addQueryParameter("features", "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote")
+        if (offset.isNotBlank()) builder.addQueryParameter("offset", offset)
+        val data = get<JsonElement>(builder.build().toString()).apiData().jsonObject
+        return DynamicPage(
+            parseDynamics(data["items"]?.jsonArray.orEmpty()),
+            data["offset"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+            data["has_more"]?.jsonPrimitive?.booleanOrNull == true
+        )
+    }
+
+    private fun parseDynamics(items: List<JsonElement>): List<DynamicVideo> = items.mapNotNull { element ->
             runCatching {
                 val item = element.jsonObject
                 val archive = item["modules"]?.jsonObject?.get("module_dynamic")?.jsonObject
@@ -152,7 +190,6 @@ class BiliRepository(context: Context) {
                 )
             }.getOrNull()
         }
-    }
 
     suspend fun search(query: String): List<Video> {
         val params = linkedMapOf(
@@ -193,8 +230,8 @@ class BiliRepository(context: Context) {
             data.long("follower"), data.string("following").toBoolean(), data.long("archive_count").toInt())
     }
 
-    suspend fun upArchives(mid: Long): List<Video> {
-        val params = linkedMapOf("mid" to mid.toString(), "pn" to "1", "ps" to "30", "order" to "pubdate", "tid" to "0", "keyword" to "")
+    suspend fun upArchives(mid: Long, page: Int = 1): List<Video> {
+        val params = linkedMapOf("mid" to mid.toString(), "pn" to page.toString(), "ps" to "30", "order" to "pubdate", "tid" to "0", "keyword" to "")
         val nav = profile()
         val signed = signWbi(params, nav.wbi_img)
         val builder = "https://api.bilibili.com/x/space/wbi/arc/search".toHttpUrl().newBuilder()
@@ -284,15 +321,22 @@ class BiliRepository(context: Context) {
     }
 
     suspend fun interaction(aid: Long, mid: Long): InteractionState {
-        val liked = runCatching { get<ApiResponse<Int>>("https://api.bilibili.com/x/web-interface/archive/has/like?aid=$aid").data == 1 }.getOrNull()
-        val later = runCatching { watchLater().any { it.aid == aid } }.getOrNull()
-        val folders = runCatching {
-            get<ApiResponse<FavoriteData>>("https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=$mid&rid=$aid&type=2")
-                .requireData().list.filter(FavoriteFolder::isFavorite).map(FavoriteFolder::id).toSet()
-        }.getOrNull()
-        val coins = runCatching { get<ApiResponse<CoinData>>("https://api.bilibili.com/x/web-interface/archive/coins?aid=$aid").requireData().multiply }.getOrNull()
-        return InteractionState(liked, later, folders, coins)
+        return coroutineScope {
+            val liked = async { runCatching { get<ApiResponse<Int>>("https://api.bilibili.com/x/web-interface/archive/has/like?aid=$aid").data == 1 }.getOrNull() }
+            val later = async { runCatching { watchLater().any { it.aid == aid } }.getOrNull() }
+            val folders = async { runCatching {
+                get<ApiResponse<FavoriteData>>("https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=$mid&rid=$aid&type=2")
+                    .requireData().list.filter(FavoriteFolder::isFavorite).map(FavoriteFolder::id).toSet()
+            }.getOrNull() }
+            val coins = async { runCatching { get<ApiResponse<CoinData>>("https://api.bilibili.com/x/web-interface/archive/coins?aid=$aid").requireData().multiply }.getOrNull() }
+            InteractionState(liked.await(), later.await(), folders.await(), coins.await())
+        }
     }
+
+    suspend fun setFollowing(mid: Long, follow: Boolean) = post(
+        "https://api.bilibili.com/x/relation/modify",
+        mapOf("fid" to mid.toString(), "act" to if (follow) "1" else "2", "re_src" to "11")
+    )
 
     suspend fun setLike(aid: Long, add: Boolean) = post("https://api.bilibili.com/x/web-interface/archive/like",
         mapOf("aid" to aid.toString(), "like" to if (add) "1" else "2"))

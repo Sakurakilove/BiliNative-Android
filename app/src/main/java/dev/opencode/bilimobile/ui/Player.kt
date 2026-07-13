@@ -57,6 +57,7 @@ import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.ui.PlayerView
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
@@ -131,6 +132,7 @@ internal fun VideoPlayer(
     var danmakuText by rememberSaveable { mutableStateOf("") }
     var fallbackSent by remember(result.videoUrls, result.audioUrl) { mutableStateOf(false) }
     var pendingSavedSeek by remember(player, key) { mutableLongStateOf(prefs.getLong(key, 0L).coerceAtLeast(0L)) }
+    val currentReportWatch by rememberUpdatedState(reportWatch)
 
     DisposableEffect(player) {
         val listener = object : Player.Listener {
@@ -145,7 +147,7 @@ internal fun VideoPlayer(
                     }
                     if (player.duration > 0 && player.currentPosition > player.duration) player.seekTo(player.duration)
                 }
-                if (state == Player.STATE_ENDED) reportWatch(-1, (SystemClock.elapsedRealtime() - watchStartElapsed) / 1000, watchStartTs, 4)
+                if (state == Player.STATE_ENDED) currentReportWatch(-1, (SystemClock.elapsedRealtime() - watchStartElapsed) / 1000, watchStartTs, 4)
             }
             override fun onPlayerError(error: PlaybackException) {
                 playbackError = "播放源连接失败"
@@ -160,29 +162,28 @@ internal fun VideoPlayer(
     }
     LaunchedEffect(player, result) { playbackError = null }
     LaunchedEffect(player, key) {
-        reportWatch(player.currentPosition / 1000, 0, watchStartTs, 1)
+        currentReportWatch(player.currentPosition / 1000, 0, watchStartTs, 1)
         while (true) {
             delay(15_000)
-            reportWatch(player.currentPosition / 1000, (SystemClock.elapsedRealtime() - watchStartElapsed) / 1000, watchStartTs, 0)
+            if (player.isPlaying && owner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) currentReportWatch(player.currentPosition / 1000, (SystemClock.elapsedRealtime() - watchStartElapsed) / 1000, watchStartTs, 0)
         }
     }
     LaunchedEffect(player) {
         while (true) {
-            withFrameNanos {
-                if (!scrubbing) {
-                    val current = player.currentPosition
-                    if (current != position) position = current
-                }
+            delay(200)
+            if (!scrubbing) {
+                val current = player.currentPosition
+                if (current != position) position = current
             }
         }
     }
     LaunchedEffect(controls, playing) { if (controls && playing) { delay(2_500); controls = false } }
-    DisposableEffect(player) { onDispose { reportWatch(player.currentPosition / 1000, (SystemClock.elapsedRealtime() - watchStartElapsed) / 1000, watchStartTs, 4); prefs.edit().putLong(key, player.currentPosition).apply(); player.release() } }
+    DisposableEffect(player) { onDispose { currentReportWatch(player.currentPosition / 1000, (SystemClock.elapsedRealtime() - watchStartElapsed) / 1000, watchStartTs, 4); prefs.edit().putLong(key, player.currentPosition).apply(); player.release() } }
     DisposableEffect(owner, player) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_PAUSE -> { reportWatch(player.currentPosition / 1000, (SystemClock.elapsedRealtime() - watchStartElapsed) / 1000, watchStartTs, 2); resumeAfterPause = player.playWhenReady; player.pause() }
-                Lifecycle.Event.ON_RESUME -> if (resumeAfterPause) { reportWatch(player.currentPosition / 1000, (SystemClock.elapsedRealtime() - watchStartElapsed) / 1000, watchStartTs, 3); player.play() }
+                Lifecycle.Event.ON_PAUSE -> { currentReportWatch(player.currentPosition / 1000, (SystemClock.elapsedRealtime() - watchStartElapsed) / 1000, watchStartTs, 2); resumeAfterPause = player.playWhenReady; player.pause() }
+                Lifecycle.Event.ON_RESUME -> if (resumeAfterPause) { currentReportWatch(player.currentPosition / 1000, (SystemClock.elapsedRealtime() - watchStartElapsed) / 1000, watchStartTs, 3); player.play() }
                 else -> Unit
             }
         }
@@ -194,7 +195,7 @@ internal fun VideoPlayer(
       Box(Modifier.fillMaxSize().background(Color.Black).clickable { controls = !controls }) {
         AndroidView({ PlayerView(it).apply { this.player = player; useController = false } }, Modifier.fillMaxSize(),
             onRelease = { it.player = null })
-        if (showDanmaku) DanmakuOverlay(danmaku.value?.items.orEmpty(), position, opacity, font, danmakuSpeed, area, maximumLanes, scrolling, topMode, bottomMode, controls)
+        if (showDanmaku) FrameSyncedDanmaku(player, danmaku.value?.items.orEmpty(), opacity, font, danmakuSpeed, area, maximumLanes, scrolling, topMode, bottomMode, controls)
         if (buffering) CircularProgressIndicator(Modifier.align(Alignment.Center).size(34.dp), color = Color.White, strokeWidth = 3.dp)
         AnimatedVisibility(controls, Modifier.fillMaxSize(), enter = fadeIn(), exit = fadeOut()) {
           Box(Modifier.fillMaxSize()) {
@@ -268,6 +269,63 @@ internal fun VideoPlayer(
         confirmButton = { TextButton({ sendDanmaku(danmakuText, position) { ok -> if (ok) { danmakuText = ""; composeDanmaku = false } } }, enabled = danmakuText.isNotBlank() && !danmakuPosting.loading) { Text(if (danmakuPosting.loading) stringResource(dev.opencode.bilimobile.R.string.loading) else stringResource(dev.opencode.bilimobile.R.string.send)) } },
         dismissButton = { if (danmakuPosting.error?.contains("刷新确认") == true) TextButton(confirmDanmakuAfterRefresh) { Text("刷新确认") } else TextButton({ composeDanmaku = false }, enabled = !danmakuPosting.loading) { Text(stringResource(dev.opencode.bilimobile.R.string.cancel)) } })
     if (settings) DanmakuSettings(showDanmaku, { showDanmaku = it }, opacity, { opacity = it }, font, { font = it }, danmakuSpeed, { danmakuSpeed = it }, area, { area = it }, maximumLanes, { maximumLanes = it }, scrolling, { scrolling = it }, topMode, { topMode = it }, bottomMode, { bottomMode = it }, danmaku, retryDanmaku) { settings = false }
+}
+
+@Composable
+private fun FrameSyncedDanmaku(player: Player, items: List<Danmaku>, opacity: Float, font: DanmakuFont, speed: DanmakuSpeed,
+    area: DanmakuArea, laneLimit: Int, scrolling: Boolean, top: Boolean, bottom: Boolean, controls: Boolean) {
+    var position by remember(player) { mutableLongStateOf(player.currentPosition) }
+    LaunchedEffect(player) {
+        while (true) withFrameNanos { position = player.currentPosition }
+    }
+    DanmakuOverlay(items, position, opacity, font, speed, area, laneLimit, scrolling, top, bottom, controls)
+}
+
+@Composable
+internal fun ShortVideoPlayer(
+    key: String,
+    result: PlayResult,
+    headers: Map<String, String>,
+    active: Boolean,
+    reportWatch: (Long, Long, Long, Int) -> Unit
+) {
+    val context = LocalContext.current
+    val owner = LocalLifecycleOwner.current
+    val startTs = remember(key) { System.currentTimeMillis() / 1000 }
+    val startElapsed = remember(key) { SystemClock.elapsedRealtime() }
+    val currentReport by rememberUpdatedState(reportWatch)
+    val player = remember(key, result.videoUrls, result.audioUrl) {
+        ExoPlayer.Builder(context).setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(3_000, 10_000, 700, 1_500).build()).build().apply {
+            val factory = DefaultHttpDataSource.Factory().setDefaultRequestProperties(headers)
+            val videos = result.videoUrls.map { url -> ProgressiveMediaSource.Factory(factory).createMediaSource(MediaItem.Builder().setUri(url).setMimeType(MimeTypes.VIDEO_MP4).build()) }
+            val video = if (videos.size == 1) videos.first() else ConcatenatingMediaSource(*videos.toTypedArray())
+            setMediaSource(result.audioUrl?.let { audio -> MergingMediaSource(video, ProgressiveMediaSource.Factory(factory).createMediaSource(MediaItem.Builder().setUri(audio).setMimeType(MimeTypes.AUDIO_MP4).build())) } ?: video)
+            repeatMode = Player.REPEAT_MODE_ONE
+            prepare(); playWhenReady = active
+        }
+    }
+    var playing by remember(player) { mutableStateOf(player.isPlaying) }
+    DisposableEffect(player) {
+        val listener = object : Player.Listener { override fun onIsPlayingChanged(value: Boolean) { playing = value } }
+        player.addListener(listener)
+        onDispose {
+            currentReport(player.currentPosition / 1000, (SystemClock.elapsedRealtime() - startElapsed) / 1000, startTs, 4)
+            player.removeListener(listener); player.release()
+        }
+    }
+    LaunchedEffect(player, active) { if (active) player.play() else player.pause() }
+    LaunchedEffect(player) {
+        currentReport(player.currentPosition / 1000, 0, startTs, 1)
+        while (true) { delay(15_000); if (player.isPlaying && owner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) currentReport(player.currentPosition / 1000, (SystemClock.elapsedRealtime() - startElapsed) / 1000, startTs, 0) }
+    }
+    DisposableEffect(owner, player) {
+        val observer = LifecycleEventObserver { _, event -> when (event) { Lifecycle.Event.ON_PAUSE -> player.pause(); Lifecycle.Event.ON_RESUME -> if (active) player.play(); else -> Unit } }
+        owner.lifecycle.addObserver(observer); onDispose { owner.lifecycle.removeObserver(observer) }
+    }
+    Box(Modifier.fillMaxSize().background(Color.Black).clickable { if (playing) player.pause() else player.play() }) {
+        AndroidView({ PlayerView(it).apply { this.player = player; useController = false; resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM } }, Modifier.fillMaxSize(), onRelease = { it.player = null })
+        if (!playing) FilledIconButton({ player.play() }, Modifier.align(Alignment.Center).size(56.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.Black.copy(.52f), contentColor = Color.White)) { Icon(Icons.Default.PlayArrow, "播放短视频") }
+    }
 }
 
 @Composable

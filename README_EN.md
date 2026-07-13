@@ -18,10 +18,10 @@ A **third-party**, non-official Bilibili Android client built with Kotlin and Je
 - **Danmaku**: Remote danmaku (official XML hosts with automatic GZIP/DEFLATE decompression and multi-host fallback) plus local danmaku; persisted master toggle, opacity, size, speed, area, and mode filters.
 - **Live**: Media3 HLS (AVC) playback, quality selection, polling danmaku (labeled "recent"), and logged-in sending with optimistic local echo plus server confirmation.
 - **Login**: Default QR-code login; experimental +86 SMS login (**currently unavailable**: an in-app Geetest WebView was planned; phone number and code are never persisted).
-- **Home feed**: Edge-to-edge compact recommendation feed backed by the public popular endpoint, with genuine pull-to-refresh paging.
+- **Home & short-video feed**: Long and short videos are separated while covers remain uniform; short videos support immersive vertical paging and next-item prefetch.
 - **Dynamics**: Post-login Polymer heterogeneous feed with pull-to-refresh and safe ignoring of unsupported card types.
 - **Search**: Top-level destination with trending hot search, local search history (clearable), and runtime WBI request signing.
-- **Uploader space**: View a UP's profile and video archive via WBI-signed endpoints.
+- **Uploader space**: View a UP's profile, uploads, and paged dynamics; logged-in users can try follow / unfollow.
 - **Interaction**: Like, coin (with explicit irreversible-cost warning), favorite (per-folder membership tracking), and watch-later, with isolated status and retry feedback.
 - **Watch history**: Progress synced to Bilibili via heartbeat reporting.
 - **Privacy card**: Explains direct device-to-Bilibili traffic, locally encrypted cookies/positions, and credential removal on logout.
@@ -40,7 +40,7 @@ A **third-party**, non-official Bilibili Android client built with Kotlin and Je
 | Images | Coil |
 | QR | ZXing |
 | Min / Target | minSdk 26 / targetSdk 35 |
-| Version | 0.2.0 (versionCode 2) |
+| Version | 0.3.0 (versionCode 3) |
 
 ---
 
@@ -55,9 +55,6 @@ For compliance, privacy, and the "lightweight, power-saving, minimal" positionin
 
 ## Planned Features (actively iterated)
 
-- **Short-video feed**: Bilibili's home separates long and short videos (uniform cover size). Plan to add an immersive vertical swipe-to-watch short-video screen that plays continuously as you scroll down.
-- **Follow**: Try to add one-tap follow / unfollow for UPs and a following feed entry.
-- **UP space dynamics**: Complete the dynamics view and pagination inside an uploader's profile space.
 - **UI rebuild**: Continuously refine the UI into a more polished, minimal design.
 - **Premium content playback**: Attempt to support Bilibili Premium (大会员) exclusive content.
 - **Anime & movie playback**: Attempt to support bangumi (番剧) and movie playback.

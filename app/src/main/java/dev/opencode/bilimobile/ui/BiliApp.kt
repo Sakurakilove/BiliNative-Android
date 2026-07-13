@@ -28,6 +28,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
+import androidx.compose.foundation.pager.VerticalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -61,6 +64,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.google.zxing.BarcodeFormat
@@ -83,13 +87,15 @@ private sealed interface AccountDestination { data object History : AccountDesti
     var detail by rememberSaveable { mutableStateOf<String?>(null) }
     var upMid by rememberSaveable { mutableLongStateOf(0L) }
     var liveRoom by rememberSaveable { mutableLongStateOf(0L) }
+    var shortVideos by remember { mutableStateOf<List<Video>?>(null) }
+    var shortIndex by remember { mutableIntStateOf(0) }
     var search by rememberSaveable { mutableStateOf(false) }
     var accountType by rememberSaveable { mutableStateOf("") }; var accountId by rememberSaveable { mutableLongStateOf(0L) }; var accountTitle by rememberSaveable { mutableStateOf("") }
     val account: AccountDestination? = when (accountType) { "history" -> AccountDestination.History; "favorites" -> AccountDestination.Favorites; "later" -> AccountDestination.Later; "folder" -> AccountDestination.Folder(accountId, accountTitle); else -> null }
     fun setAccount(value: AccountDestination?) { when (value) { AccountDestination.History -> accountType = "history"; AccountDestination.Favorites -> accountType = "favorites"; AccountDestination.Later -> accountType = "later"; is AccountDestination.Folder -> { accountType = "folder"; accountId = value.id; accountTitle = value.title }; null -> { accountType = ""; accountId = 0; accountTitle = "" } } }
-    BackHandler(liveRoom > 0 || upMid > 0 || detail != null || search || account != null) { when { liveRoom > 0 -> { vm.closeLiveRoom(); liveRoom = 0 }; upMid > 0 -> upMid = 0; detail != null -> detail = null; account is AccountDestination.Folder -> setAccount(AccountDestination.Favorites); account != null -> setAccount(null); else -> search = false } }
+    BackHandler(shortVideos != null || liveRoom > 0 || upMid > 0 || detail != null || search || account != null) { when { shortVideos != null -> { vm.closeShortVideos(); shortVideos = null }; liveRoom > 0 -> { vm.closeLiveRoom(); liveRoom = 0 }; upMid > 0 -> upMid = 0; detail != null -> detail = null; account is AccountDestination.Folder -> setAccount(AccountDestination.Favorites); account != null -> setAccount(null); else -> search = false } }
     Scaffold(bottomBar = {
-        AnimatedVisibility(liveRoom == 0L && upMid == 0L && detail == null && !search && account == null, enter = fadeIn(), exit = fadeOut()) {
+        AnimatedVisibility(shortVideos == null && liveRoom == 0L && upMid == 0L && detail == null && !search && account == null, enter = fadeIn(), exit = fadeOut()) {
             NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
                 RootTab.entries.forEach { item -> NavigationBarItem(tab == item, { tab = item }, {
                     Icon(when (item) { RootTab.Home -> Icons.Default.Home; RootTab.Dynamic -> Icons.Default.Subscriptions; RootTab.Profile -> Icons.Default.Person }, tabTitle(item))
@@ -98,7 +104,8 @@ private sealed interface AccountDestination { data object History : AccountDesti
         }
     }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
-            AnimatedContent(listOf(detail, search, account, liveRoom, upMid), label = "destination") { target ->
+            if (shortVideos != null) ShortVideoScreen(shortVideos.orEmpty(), shortIndex, vm, { vm.closeShortVideos(); shortVideos = null }) { mid -> vm.closeShortVideos(); shortVideos = null; upMid = mid }
+            else AnimatedContent(listOf(detail, search, account, liveRoom, upMid), label = "destination") { target ->
                 val d = target[0] as String?
                 val s = target[1] as Boolean
                 val a = target[2] as AccountDestination?
@@ -106,11 +113,11 @@ private sealed interface AccountDestination { data object History : AccountDesti
                 val uploader = target[4] as Long
                 when {
                     lr > 0L -> LiveRoomScreen(lr, vm)
-                    uploader > 0L -> UpSpaceScreen(uploader, vm, { upMid = 0 }) { detail = it }
+                    uploader > 0L -> UpSpaceScreen(uploader, vm, { upMid = 0 }) { upMid = 0; detail = it }
                     d != null -> DetailScreen(d, vm, { detail = it }) { upMid = it }
                     s -> SearchScreen(vm, { search = false }, { detail = it })
                     a != null -> AccountScreen(a, vm, ::setAccount, { detail = it })
-                    tab == RootTab.Home -> HomeScreen(vm, { search = true }, { detail = it }, { liveRoom = it })
+                    tab == RootTab.Home -> HomeScreen(vm, { search = true }, { detail = it }, { videos, index -> shortVideos = videos; shortIndex = index }, { liveRoom = it })
                     tab == RootTab.Dynamic -> DynamicScreen(vm, { detail = it }) { upMid = it }
                     else -> ProfileScreen(vm, ::setAccount) { detail = it }
                 }
@@ -120,8 +127,8 @@ private sealed interface AccountDestination { data object History : AccountDesti
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun HomeScreen(vm: MainViewModel, search: () -> Unit, open: (String) -> Unit, openLive: (Long) -> Unit) {
-    val state by vm.popular.collectAsState(); val selected by vm.channel.collectAsState(); val profile by vm.profile.collectAsState(); val live by vm.liveRooms.collectAsState()
+@Composable private fun HomeScreen(vm: MainViewModel, search: () -> Unit, open: (String) -> Unit, openShort: (List<Video>, Int) -> Unit, openLive: (Long) -> Unit) {
+    val state by vm.popular.collectAsStateWithLifecycle(); val selected by vm.channel.collectAsStateWithLifecycle(); val profile by vm.profile.collectAsStateWithLifecycle(); val live by vm.liveRooms.collectAsStateWithLifecycle()
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             NetworkImage(profile.value?.face.orEmpty(), "头像", Modifier.size(40.dp).clip(CircleShape), 80, 80)
@@ -137,7 +144,7 @@ private sealed interface AccountDestination { data object History : AccountDesti
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         PullToRefreshBox(isRefreshing = if (selected.live) live.loading else state.loading, onRefresh = { vm.refreshPopular(force = true) }, modifier = Modifier.weight(1f)) {
             if (selected.live) StateBody(live, vm::refreshLiveRooms, skeleton = true) { LiveGrid(it, openLive) }
-            else { if (state.error != null && state.value != null) ErrorBanner(state.error!!) { vm.refreshPopular(force = true) }; StateBody(state, { vm.refreshPopular(force = true) }, skeleton = true) { VideoGrid(it, open) } }
+            else { if (state.error != null && state.value != null) ErrorBanner(state.error!!) { vm.refreshPopular(force = true) }; StateBody(state, { vm.refreshPopular(force = true) }, skeleton = true) { VideoGrid(it, open, if (selected.short) openShort else null) } }
         }
     }
 }
@@ -145,7 +152,7 @@ private sealed interface AccountDestination { data object History : AccountDesti
 @Composable private fun LiveGrid(rooms: List<LiveRoomSummary>, open: (Long) -> Unit) { LazyVerticalGrid(GridCells.Fixed(2), contentPadding = PaddingValues(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) { gridItems(rooms, key = { it.roomId }) { room -> Card(onClick = { open(room.roomId) }) { Column { Box { NetworkImage(room.cover, room.title, Modifier.fillMaxWidth().aspectRatio(16 / 9f), 480, 270); Text("直播 · ${formatCount(room.online)}", Modifier.align(Alignment.BottomStart).background(Color.Black.copy(.55f)).padding(5.dp), color = Color.White, fontSize = 11.sp) }; Text(room.title, Modifier.padding(8.dp), maxLines = 2, fontWeight = FontWeight.SemiBold); Text("${room.userName} · ${room.areaName}", Modifier.padding(horizontal = 8.dp, vertical = 4.dp), fontSize = 11.sp) } } } } }
 
 @Composable private fun LiveRoomScreen(roomId: Long, vm: MainViewModel) {
-    val detail by vm.liveDetail.collectAsState(); val play by vm.livePlay.collectAsState(); val messages by vm.liveMessages.collectAsState(); val posting by vm.livePosting.collectAsState(); val profile by vm.profile.collectAsState()
+    val detail by vm.liveDetail.collectAsStateWithLifecycle(); val play by vm.livePlay.collectAsStateWithLifecycle(); val messages by vm.liveMessages.collectAsStateWithLifecycle(); val posting by vm.livePosting.collectAsStateWithLifecycle(); val profile by vm.profile.collectAsStateWithLifecycle()
     var text by rememberSaveable(roomId) { mutableStateOf("") }
     val messageListState = rememberLazyListState()
     LaunchedEffect(roomId) { vm.loadLiveRoom(roomId) }
@@ -163,7 +170,8 @@ private sealed interface AccountDestination { data object History : AccountDesti
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun UpSpaceScreen(mid: Long, vm: MainViewModel, close: () -> Unit, open: (String) -> Unit) {
-    val profile by vm.upProfile.collectAsState(); val videos by vm.upVideos.collectAsState()
+    val profile by vm.upProfile.collectAsStateWithLifecycle(); val videos by vm.upVideos.collectAsStateWithLifecycle(); val dynamics by vm.upDynamics.collectAsStateWithLifecycle(); val dynamicHasMore by vm.upDynamicHasMore.collectAsStateWithLifecycle(); val followPosting by vm.upFollowPosting.collectAsStateWithLifecycle(); val account by vm.profile.collectAsStateWithLifecycle()
+    var tab by rememberSaveable(mid) { mutableIntStateOf(0) }
     LaunchedEffect(mid) { vm.loadUpSpace(mid) }
     Column(Modifier.fillMaxSize()) {
         TopAppBar(title = { Text("UP 主空间") }, navigationIcon = { IconButton(close) { Icon(Icons.Default.ArrowBack, "返回") } })
@@ -176,13 +184,23 @@ private sealed interface AccountDestination { data object History : AccountDesti
                         Text("LV${user.level} · UID ${user.mid}", Modifier.padding(top = 3.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         if (user.sign.isNotBlank()) Text(user.sign, Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodyMedium, maxLines = 2)
                     }
+                    if (account.value?.isLogin == true && account.value?.mid != user.mid) Button({ vm.toggleFollowing(user.mid) }, enabled = !followPosting.loading) { Text(if (user.following) "已关注" else "关注") }
                 }
+                followPosting.error?.let { Text(it, Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(32.dp)) {
                     SpaceStat(formatCount(user.follower), "粉丝"); SpaceStat(user.archiveCount.toString(), "投稿")
                 }
                 HorizontalDivider(Modifier.padding(top = 12.dp), color = MaterialTheme.colorScheme.outlineVariant)
-                Text("最新投稿", Modifier.padding(horizontal = 16.dp, vertical = 16.dp), style = MaterialTheme.typography.titleMedium)
-                Box(Modifier.weight(1f)) { StateBody(videos, { vm.loadUpSpace(mid) }, skeleton = true) { VideoGrid(it, open) } }
+                TabRow(tab) { Tab(tab == 0, { tab = 0 }, text = { Text("投稿") }); Tab(tab == 1, { tab = 1 }, text = { Text("动态") }) }
+                Box(Modifier.weight(1f)) {
+                    if (tab == 0) StateBody(videos, { vm.loadUpSpace(mid) }, skeleton = true) { VideoGrid(it, open) }
+                    else StateBody(dynamics, { vm.loadUpDynamics(mid, reset = true) }, skeleton = true) { list ->
+                        LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp)) {
+                            items(list, key = { it.id }) { item -> DynamicCard(item, { open(item.video.bvid) }, {}) }
+                            item { if (dynamicHasMore) TextButton({ vm.loadUpDynamics(mid) }, Modifier.fillMaxWidth(), enabled = !dynamics.loading) { Text(if (dynamics.loading) "加载中" else "加载更多动态") } else if (list.isNotEmpty()) Text("已加载全部动态", Modifier.fillMaxWidth().padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall) }
+                        }
+                    }
+                }
             }
         }
     }
@@ -191,7 +209,7 @@ private sealed interface AccountDestination { data object History : AccountDesti
 @Composable private fun RowScope.SpaceStat(value: String, label: String) { Column { Text(value, style = MaterialTheme.typography.titleMedium); Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
 
 @Composable private fun SearchScreen(vm: MainViewModel, close: () -> Unit, open: (String) -> Unit) {
-    val state by vm.search.collectAsState(); val hot by vm.hotSearch.collectAsState(); val history by vm.searchHistory.collectAsState()
+    val state by vm.search.collectAsStateWithLifecycle(); val hot by vm.hotSearch.collectAsStateWithLifecycle(); val history by vm.searchHistory.collectAsStateWithLifecycle()
     var query by rememberSaveable { mutableStateOf("") }; var submitted by rememberSaveable { mutableStateOf(false) }
     fun submit(value: String) { val text = value.trim(); if (text.isNotBlank()) { query = text; submitted = true; vm.search(text) } }
     Column(Modifier.fillMaxSize()) {
@@ -214,9 +232,9 @@ private sealed interface AccountDestination { data object History : AccountDesti
     }
 }
 
-@Composable private fun VideoGrid(videos: List<Video>, open: (String) -> Unit) {
+@Composable private fun VideoGrid(videos: List<Video>, open: (String) -> Unit, openShort: ((List<Video>, Int) -> Unit)? = null) {
     LazyVerticalGrid(GridCells.Adaptive(148.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-        gridItems(videos, key = { it.bvid }) { VideoCard(it) { open(it.bvid) } }
+        gridItemsIndexed(videos, key = { _, item -> item.bvid }) { index, video -> VideoCard(video) { if (openShort != null) openShort(videos, index) else open(video.bvid) } }
     }
 }
 
@@ -231,26 +249,56 @@ private sealed interface AccountDestination { data object History : AccountDesti
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun DynamicScreen(vm: MainViewModel, open: (String) -> Unit, openUp: (Long) -> Unit) {
-    val profile by vm.profile.collectAsState(); val state by vm.dynamics.collectAsState()
+    val profile by vm.profile.collectAsStateWithLifecycle(); val state by vm.dynamics.collectAsStateWithLifecycle()
     LaunchedEffect(profile.value?.isLogin) { if (profile.value?.isLogin == true) vm.refreshDynamicsIfStale() }
     Column { CompactTitle("动态", "关注的最新投稿")
         if (profile.value?.isLogin != true) Empty("登录后查看关注动态") else PullToRefreshBox(state.loading, { vm.loadDynamics(force = true) }, Modifier.weight(1f)) { StateBody(state, { vm.loadDynamics(force = true) }) { list ->
             LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)) { items(list, key = { it.id }) { item ->
-                Column(Modifier.fillMaxWidth().clickable { open(item.video.bvid) }.padding(vertical = 16.dp)) {
-                    Row(Modifier.clickable(enabled = item.authorMid > 0) { openUp(item.authorMid) }, verticalAlignment = Alignment.CenterVertically) { NetworkImage(item.avatar, item.video.creator, Modifier.size(40.dp).clip(CircleShape), 80, 80); Spacer(Modifier.width(12.dp)); Column { Text(item.video.creator, style = MaterialTheme.typography.titleSmall); Text(item.time, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
-                    if (item.text.isNotBlank()) Text(item.text, Modifier.padding(top = 12.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3)
-                    Text(item.video.title, Modifier.padding(top = 10.dp, bottom = 8.dp), style = MaterialTheme.typography.titleMedium)
-                    NetworkImage(item.video.coverUrl, item.video.title, Modifier.fillMaxWidth().aspectRatio(16 / 9f).clip(MaterialTheme.shapes.medium), 720, 405)
-                    HorizontalDivider(Modifier.padding(top = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
-                }
+                DynamicCard(item, { open(item.video.bvid) }) { if (item.authorMid > 0) openUp(item.authorMid) }
             } }
         } }
     }
 }
 
+@Composable private fun DynamicCard(item: DynamicVideo, open: () -> Unit, openUp: () -> Unit) {
+    Column(Modifier.fillMaxWidth().clickable(onClick = open).padding(vertical = 16.dp)) {
+        Row(Modifier.clickable(enabled = item.authorMid > 0, onClick = openUp), verticalAlignment = Alignment.CenterVertically) { NetworkImage(item.avatar, item.video.creator, Modifier.size(40.dp).clip(CircleShape), 80, 80); Spacer(Modifier.width(12.dp)); Column { Text(item.video.creator, style = MaterialTheme.typography.titleSmall); Text(item.time, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+        if (item.text.isNotBlank()) Text(item.text, Modifier.padding(top = 12.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3)
+        Text(item.video.title, Modifier.padding(top = 10.dp, bottom = 8.dp), style = MaterialTheme.typography.titleMedium)
+        NetworkImage(item.video.coverUrl, item.video.title, Modifier.fillMaxWidth().aspectRatio(16 / 9f).clip(MaterialTheme.shapes.medium), 720, 405)
+        HorizontalDivider(Modifier.padding(top = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
+    }
+}
+
+@Composable private fun ShortVideoScreen(videos: List<Video>, initialIndex: Int, vm: MainViewModel, close: () -> Unit, openUp: (Long) -> Unit) {
+    if (videos.isEmpty()) { Empty("暂无可刷短视频"); return }
+    val pager = rememberPagerState(initialPage = initialIndex.coerceIn(videos.indices), pageCount = { videos.size })
+    val detail by vm.shortDetail.collectAsStateWithLifecycle(); val stream by vm.shortPlay.collectAsStateWithLifecycle()
+    LaunchedEffect(pager.currentPage) { vm.loadShortVideo(videos[pager.currentPage], videos.getOrNull(pager.currentPage + 1)) }
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        VerticalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1) { page ->
+            val item = videos[page]
+            Box(Modifier.fillMaxSize().background(Color.Black)) {
+                if (page == pager.currentPage && stream.value != null && detail.value?.bvid == item.bvid) {
+                    val video = detail.value!!
+                    ShortVideoPlayer(item.bvid, stream.value!!, vm.playbackHeaders(), true) { played, realtime, start, type -> vm.reportWatchProgress(video.aid, video.cid, video.bvid, played, realtime, start, type) }
+                } else NetworkImage(item.coverUrl, item.title, Modifier.fillMaxSize(), 720, 1280, ContentScale.Crop)
+                Column(Modifier.align(Alignment.BottomStart).fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(.82f)))).padding(start = 16.dp, end = 72.dp, top = 80.dp, bottom = 28.dp)) {
+                    Text("@${detail.value?.creator?.takeIf { page == pager.currentPage }.orEmpty().ifBlank { item.creator }}", color = Color.White, style = MaterialTheme.typography.titleMedium, modifier = Modifier.clickable(enabled = (detail.value?.owner?.mid ?: item.owner.mid) > 0) { openUp(detail.value?.owner?.mid ?: item.owner.mid) })
+                    Text(clean(item.title), Modifier.padding(top = 8.dp), color = Color.White, style = MaterialTheme.typography.bodyLarge, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    Text("${page + 1} / ${videos.size} · 向下滑动继续", Modifier.padding(top = 8.dp), color = Color.White.copy(.72f), style = MaterialTheme.typography.bodySmall)
+                }
+                if (page == pager.currentPage && (stream.loading || detail.loading)) CircularProgressIndicator(Modifier.align(Alignment.Center), color = Color.White)
+                if (page == pager.currentPage && stream.error != null) Surface(Modifier.align(Alignment.Center), color = Color.Black.copy(.72f), shape = MaterialTheme.shapes.medium) { Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) { Text(stream.error.orEmpty(), color = Color.White); TextButton({ vm.loadShortVideo(item, videos.getOrNull(page + 1)) }) { Text("重试") } } }
+            }
+        }
+        IconButton(close, Modifier.align(Alignment.TopStart).padding(8.dp).background(Color.Black.copy(.42f), CircleShape)) { Icon(Icons.Default.ArrowBack, "退出刷视频", tint = Color.White) }
+    }
+}
+
 @Composable private fun DetailScreen(bvid: String, vm: MainViewModel, open: (String) -> Unit, openUp: (Long) -> Unit) {
-    val detail by vm.details.collectAsState(); val stream by vm.playUrl.collectAsState(); val comments by vm.comments.collectAsState(); val related by vm.related.collectAsState(); val interaction by vm.interaction.collectAsState(); val replies by vm.replies.collectAsState(); val danmaku by vm.danmaku.collectAsState(); val favorites by vm.favorites.collectAsState(); val profile by vm.profile.collectAsState(); val commentPosting by vm.commentPosting.collectAsState(); val danmakuPosting by vm.danmakuPosting.collectAsState()
-    val pinned by vm.pinnedOwnComment.collectAsState(); val context = LocalContext.current
+    val detail by vm.details.collectAsStateWithLifecycle(); val stream by vm.playUrl.collectAsStateWithLifecycle(); val comments by vm.comments.collectAsStateWithLifecycle(); val related by vm.related.collectAsStateWithLifecycle(); val interaction by vm.interaction.collectAsStateWithLifecycle(); val replies by vm.replies.collectAsStateWithLifecycle(); val danmaku by vm.danmaku.collectAsStateWithLifecycle(); val favorites by vm.favorites.collectAsStateWithLifecycle(); val profile by vm.profile.collectAsStateWithLifecycle(); val commentPosting by vm.commentPosting.collectAsStateWithLifecycle(); val danmakuPosting by vm.danmakuPosting.collectAsStateWithLifecycle()
+    val pinned by vm.pinnedOwnComment.collectAsStateWithLifecycle(); val context = LocalContext.current
     var chooseFolder by rememberSaveable { mutableStateOf(false) }
     var chooseCoin by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(bvid) { vm.loadDetails(bvid) }
@@ -306,7 +354,7 @@ private sealed interface AccountDestination { data object History : AccountDesti
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun AccountScreen(destination: AccountDestination, vm: MainViewModel, navigate: (AccountDestination?) -> Unit, open: (String) -> Unit) {
-    val history by vm.history.collectAsState(); val later by vm.watchLater.collectAsState(); val favorites by vm.favorites.collectAsState(); val resources by vm.favoriteResources.collectAsState(); val favoriteHasMore by vm.favoriteHasMore.collectAsState()
+    val history by vm.history.collectAsStateWithLifecycle(); val later by vm.watchLater.collectAsStateWithLifecycle(); val favorites by vm.favorites.collectAsStateWithLifecycle(); val resources by vm.favoriteResources.collectAsStateWithLifecycle(); val favoriteHasMore by vm.favoriteHasMore.collectAsStateWithLifecycle()
     if (destination is AccountDestination.Folder) LaunchedEffect(destination.id) { vm.loadFavoriteResources(destination.id, reset = true) }
     LaunchedEffect(destination) { when (destination) { AccountDestination.History -> vm.refreshHistory(); AccountDestination.Later -> vm.refreshWatchLater(); AccountDestination.Favorites -> vm.refreshFavorites(); is AccountDestination.Folder -> Unit } }
     Column(Modifier.fillMaxSize()) {
@@ -323,7 +371,7 @@ private sealed interface AccountDestination { data object History : AccountDesti
 @Composable private fun AccountVideoRow(image: String, title: String, author: String, progress: Int, duration: Int, bvid: String, open: (String) -> Unit) { Row(Modifier.fillMaxWidth().clickable(enabled = bvid.isNotBlank()) { open(bvid) }.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) { NetworkImage(image, title, Modifier.width(128.dp).aspectRatio(16 / 9f).clip(RoundedCornerShape(10.dp)), 320, 180); Spacer(Modifier.width(11.dp)); Column(Modifier.weight(1f)) { Text(title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis); if (author.isNotBlank()) Text(author, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1); if (progress > 0) { Text("${formatDuration(progress)} / ${formatDuration(duration)}", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary); LinearProgressIndicator({ if (duration > 0) progress.toFloat() / duration else 0f }, Modifier.fillMaxWidth().padding(top = 3.dp)) } } } }
 
 @Composable private fun ProfileScreen(vm: MainViewModel, destination: (AccountDestination) -> Unit, open: (String) -> Unit) {
-    val profile by vm.profile.collectAsState(); val login by vm.login.collectAsState(); val sms by vm.smsLogin.collectAsState(); val history by vm.history.collectAsState(); val later by vm.watchLater.collectAsState(); val favorites by vm.favorites.collectAsState()
+    val profile by vm.profile.collectAsStateWithLifecycle(); val login by vm.login.collectAsStateWithLifecycle(); val sms by vm.smsLogin.collectAsStateWithLifecycle(); val history by vm.history.collectAsStateWithLifecycle(); val later by vm.watchLater.collectAsStateWithLifecycle(); val favorites by vm.favorites.collectAsStateWithLifecycle()
     Box { StateBody(profile, vm::refreshProfile) { user -> if (!user.isLogin) SignedOut(profile.error, vm::beginLogin) else LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         profile.error?.let { item { ErrorBanner(it, vm::refreshProfile) } }
         item { Row(verticalAlignment = Alignment.CenterVertically) { NetworkImage(user.face, user.uname, Modifier.size(64.dp).clip(CircleShape), 144, 144); Spacer(Modifier.width(14.dp)); Column { Text(user.uname, fontSize = 21.sp, fontWeight = FontWeight.Bold); Text("LV${user.level_info.currentLevel} · UID ${user.mid}", color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
@@ -396,13 +444,13 @@ private class CaptchaBridge(private val attempt: String, private val success: (S
 @Composable private fun ErrorBanner(message: String, retry: () -> Unit) { Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.errorContainer) { Row(Modifier.padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) { Text(message, Modifier.weight(1f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis); TextButton(retry) { Text("重试") } } } }
 @Composable private fun SkeletonGrid() { LazyVerticalGrid(GridCells.Fixed(2), contentPadding = PaddingValues(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) { items(8) { Column { Box(Modifier.fillMaxWidth().aspectRatio(16 / 9f).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant)); Spacer(Modifier.height(8.dp)); Box(Modifier.fillMaxWidth(.9f).height(13.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant)); Spacer(Modifier.height(6.dp)); Box(Modifier.fillMaxWidth(.55f).height(10.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant)) } } } }
 @Composable private fun Empty(text: String) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
-@Composable private fun NetworkImage(url: String, description: String, modifier: Modifier, width: Int, height: Int) {
+@Composable private fun NetworkImage(url: String, description: String, modifier: Modifier, width: Int, height: Int, contentScale: ContentScale = ContentScale.Crop) {
     val context = LocalContext.current
     val data = remember(url, width, height) { optimizedImageUrl(url, width, height) }
     val request = remember(context, data, width, height) {
         ImageRequest.Builder(context).data(data).size(width, height).crossfade(80).build()
     }
-    AsyncImage(request, description, modifier, placeholder = ColorPainter(MaterialTheme.colorScheme.surfaceVariant), error = ColorPainter(MaterialTheme.colorScheme.surfaceVariant), contentScale = ContentScale.Crop)
+    AsyncImage(request, description, modifier, placeholder = ColorPainter(MaterialTheme.colorScheme.surfaceVariant), error = ColorPainter(MaterialTheme.colorScheme.surfaceVariant), contentScale = contentScale)
 }
 
 private fun qr(value: String): Bitmap { val matrix = QRCodeWriter().encode(value, BarcodeFormat.QR_CODE, 600, 600); return Bitmap.createBitmap(600, 600, Bitmap.Config.ARGB_8888).also { image -> for (x in 0 until 600) for (y in 0 until 600) image.setPixel(x, y, if (matrix[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE) } }
