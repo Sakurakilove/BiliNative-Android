@@ -50,19 +50,22 @@ class BiliRepository(context: Context) {
     ).requireData().list.filter { it.isPlayable }
 
     suspend fun channel(channel: Channel, page: Int = 1): List<Video> {
-        if (channel.short) return shortVideos()
+        if (channel.short) return shortVideos(page)
         if (channel.popular) return popular(page).filterNot(Video::isShort)
         // The anonymous recommendation endpoint frequently rejects otherwise valid requests.
         // Popular is a stable, non-empty recommendation baseline with a distinct UI label.
         if (channel.tid == null) return popular(page).filterNot(Video::isShort)
-        return get<ApiResponse<RankingData>>("https://api.bilibili.com/x/web-interface/ranking/v2?rid=${channel.tid}&type=all")
-            .requireData().list.filter { it.isPlayable && !it.isShort }
+        return get<ApiResponse<RegionData>>("https://api.bilibili.com/x/web-interface/newlist?type=0&ps=30&rid=${channel.tid}&pn=$page")
+            .requireData().archives.filter { it.isPlayable && !it.isShort }
     }
 
-    suspend fun shortVideos(): List<Video> = coroutineScope {
+    suspend fun shortVideos(page: Int = 1): List<Video> = coroutineScope {
         val recommendation = async {
             runCatching {
-                val params = linkedMapOf("fresh_type" to "3", "version" to "1", "ps" to "30")
+                val freshIndex = page.coerceAtLeast(1)
+                val params = linkedMapOf("fresh_type" to "3", "version" to "1", "ps" to "30",
+                    "fresh_idx" to freshIndex.toString(), "fresh_idx_1h" to freshIndex.toString(),
+                    "homepage_ver" to "1", "feed_version" to "V8")
                 val nav = profile()
                 val signed = if (nav.wbi_img.img_url.isNotBlank()) signWbi(params, nav.wbi_img) else params
                 val builder = "https://api.bilibili.com/x/web-interface/wbi/index/top/feed/rcmd".toHttpUrl().newBuilder()
@@ -70,14 +73,15 @@ class BiliRepository(context: Context) {
                 get<ApiResponse<RecommendData>>(builder.build().toString()).requireData().item
             }.getOrDefault(emptyList())
         }
-        val popularPages = (1..3).map { page -> async { runCatching { popular(page) }.getOrDefault(emptyList()) } }
+        val firstPopularPage = (page.coerceAtLeast(1) - 1) * 3 + 1
+        val popularPages = (firstPopularPage until firstPopularPage + 3).map { popularPage -> async { runCatching { popular(popularPage) }.getOrDefault(emptyList()) } }
         (recommendation.await() + popularPages.awaitAll().flatten())
             .filter { it.isPlayable && it.isShort }
             .distinctBy(Video::bvid)
     }
 
-    suspend fun liveRooms(): List<LiveRoomSummary> {
-        val root = get<JsonElement>("https://api.live.bilibili.com/room/v3/area/getRoomList?platform=web&parent_area_id=0&area_id=0&page=1&page_size=20").apiData()
+    suspend fun liveRooms(page: Int = 1): List<LiveRoomSummary> {
+        val root = get<JsonElement>("https://api.live.bilibili.com/room/v3/area/getRoomList?platform=web&parent_area_id=0&area_id=0&page=$page&page_size=20").apiData()
         return root.jsonObject["list"]?.jsonArray.orEmpty().take(20).mapNotNull { value -> runCatching {
             val item = value.jsonObject
             LiveRoomSummary(item.long("roomid", "room_id"), item.string("title"), item.string("cover", "user_cover"),
@@ -143,15 +147,19 @@ class BiliRepository(context: Context) {
             "fontsize" to "25", "color" to "16777215", "mode" to "1", "bubble" to "0", "room_type" to "0"),
         origin = "https://live.bilibili.com", referer = "https://live.bilibili.com/$roomId")
 
-    suspend fun dynamics(forceRefresh: Boolean = false): List<DynamicVideo> {
+    suspend fun dynamics(offset: String = "", forceRefresh: Boolean = false): DynamicPage {
         val url = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all".toHttpUrl().newBuilder()
             .addQueryParameter("timezone_offset", "-480")
+            .apply { if (offset.isNotBlank()) addQueryParameter("offset", offset) }
             .apply { if (forceRefresh) addQueryParameter("refresh", System.currentTimeMillis().toString()) }
             .build().toString()
         val root = get<JsonElement>(url)
         val response = root.jsonObject
         if (response["code"]?.jsonPrimitive?.intOrNull != 0) error(apiError(response["code"]?.jsonPrimitive?.intOrNull ?: -1))
-        return parseDynamics(response["data"]?.jsonObject?.get("items")?.jsonArray.orEmpty())
+        val data = response["data"]?.jsonObject ?: return DynamicPage(emptyList())
+        return DynamicPage(parseDynamics(data["items"]?.jsonArray.orEmpty()),
+            data["offset"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+            data["has_more"]?.jsonPrimitive?.booleanOrNull == true)
     }
 
     suspend fun upDynamics(mid: Long, offset: String = ""): DynamicPage {
@@ -191,9 +199,9 @@ class BiliRepository(context: Context) {
             }.getOrNull()
         }
 
-    suspend fun search(query: String): List<Video> {
+    suspend fun search(query: String, page: Int = 1): VideoPage {
         val params = linkedMapOf(
-            "search_type" to "video", "keyword" to query, "page" to "1",
+            "search_type" to "video", "keyword" to query, "page" to page.toString(),
             "order" to "totalrank", "duration" to "0", "tids" to "0"
         )
         val nav = profile()
@@ -206,11 +214,13 @@ class BiliRepository(context: Context) {
         (if (useWbi) signWbi(params, nav.wbi_img) else params).forEach { (key, value) ->
             builder.addQueryParameter(key, value)
         }
-        return get<ApiResponse<SearchData>>(builder.build().toString()).requireData().result
+        val data = get<ApiResponse<SearchData>>(builder.build().toString()).requireData()
+        val items = data.result
             .asSequence()
             .filter { it.bvid.isNotBlank() && (it.type.isBlank() || it.type == "video") }
             .map { it.asVideo() }
             .toList()
+        return VideoPage(items, if (data.numPages > 0) page < data.numPages else items.size >= 20)
     }
 
     suspend fun hotSearch(limit: Int = 10): List<HotSearchItem> {
@@ -230,20 +240,23 @@ class BiliRepository(context: Context) {
             data.long("follower"), data.string("following").toBoolean(), data.long("archive_count").toInt())
     }
 
-    suspend fun upArchives(mid: Long, page: Int = 1): List<Video> {
+    suspend fun upArchives(mid: Long, page: Int = 1): VideoPage {
         val params = linkedMapOf("mid" to mid.toString(), "pn" to page.toString(), "ps" to "30", "order" to "pubdate", "tid" to "0", "keyword" to "")
         val nav = profile()
         val signed = signWbi(params, nav.wbi_img)
         val builder = "https://api.bilibili.com/x/space/wbi/arc/search".toHttpUrl().newBuilder()
         signed.forEach { (key, value) -> builder.addQueryParameter(key, value) }
         val data = get<JsonElement>(builder.build().toString()).apiData().jsonObject
-        return data["list"]?.jsonObject?.get("vlist")?.jsonArray.orEmpty().mapNotNull { value -> runCatching {
+        val pageData = data["page"]?.jsonObject
+        val count = pageData?.long("count") ?: 0
+        val items = data["list"]?.jsonObject?.get("vlist")?.jsonArray.orEmpty().mapNotNull { value -> runCatching {
             val item = value.jsonObject
             val bvid = item.string("bvid")
             Video(bvid = bvid, aid = item.long("aid"), title = item.string("title"), pic = item.string("pic"),
                 desc = item.string("description"), duration = item.string("length").parseDuration(),
                 owner = Owner(mid, item.string("author")), play = item.long("play"), pubdate = item.long("created"))
         }.getOrNull()?.takeIf { it.bvid.isNotBlank() } }
+        return VideoPage(items, if (count > 0) page * 30 < count else items.size >= 30)
     }
 
     suspend fun details(bvid: String): Video = get<ApiResponse<Video>>(
@@ -268,9 +281,13 @@ class BiliRepository(context: Context) {
             .addQueryParameter("ps", "20").build().toString()
     ).requireData()
 
-    suspend fun history(): List<HistoryItem> = get<ApiResponse<HistoryData>>(
-        "https://api.bilibili.com/x/web-interface/history/cursor?ps=20"
-    ).requireData().list
+    suspend fun history(max: Long = 0, viewAt: Long = 0, business: String = ""): HistoryData {
+        val builder = "https://api.bilibili.com/x/web-interface/history/cursor".toHttpUrl().newBuilder().addQueryParameter("ps", "20")
+        if (max > 0) builder.addQueryParameter("max", max.toString())
+        if (viewAt > 0) builder.addQueryParameter("view_at", viewAt.toString())
+        if (business.isNotBlank()) builder.addQueryParameter("business", business)
+        return get<ApiResponse<HistoryData>>(builder.build().toString()).requireData()
+    }
 
     suspend fun watchLater(): List<Video> = get<ApiResponse<WatchLaterData>>(
         "https://api.bilibili.com/x/v2/history/toview"

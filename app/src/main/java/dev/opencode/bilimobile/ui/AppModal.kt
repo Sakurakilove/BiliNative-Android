@@ -27,14 +27,14 @@ internal fun AppModal(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp).widthIn(max = 430.dp).heightIn(max = 680.dp),
             shape = MaterialTheme.shapes.extraLarge,
             color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 2.dp
+            tonalElevation = 0.dp
         ) {
             Column(Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                     IconButton(dismiss) { Icon(Icons.Default.Close, "关闭") }
                 }
-                Spacer(Modifier.height(10.dp))
+                HorizontalDivider(Modifier.padding(top = 4.dp, bottom = 14.dp), color = MaterialTheme.colorScheme.onSurface)
                 content()
                 Spacer(Modifier.height(18.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {

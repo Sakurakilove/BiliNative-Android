@@ -8,6 +8,7 @@ import dev.opencode.bilimobile.data.LoginState
 import dev.opencode.bilimobile.data.Comment
 import dev.opencode.bilimobile.data.FavoriteFolder
 import dev.opencode.bilimobile.data.HistoryItem
+import dev.opencode.bilimobile.data.HistoryCursor
 import dev.opencode.bilimobile.data.NavData
 import dev.opencode.bilimobile.data.PlayResult
 import dev.opencode.bilimobile.data.Video
@@ -37,7 +38,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.supervisorScope
 
 data class ContentState<T>(
     val value: T? = null,
@@ -50,11 +50,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val searchPreferences = application.getSharedPreferences("search_history", 0)
     private val _popular = MutableStateFlow(ContentState<List<Video>>(loading = true))
     val popular = _popular.asStateFlow()
+    private val _channelHasMore = MutableStateFlow(true)
+    val channelHasMore = _channelHasMore.asStateFlow()
+    private val _channelLoadingMore = MutableStateFlow(false)
+    val channelLoadingMore = _channelLoadingMore.asStateFlow()
     val channels = listOf(Channel("推荐"), Channel("短视频", short = true), Channel("热门", popular = true), Channel("直播", live = true), Channel("动画", 1), Channel("游戏", 4), Channel("知识", 36), Channel("科技", 188), Channel("生活", 160))
     private val _channel = MutableStateFlow(channels.first())
     val channel = _channel.asStateFlow()
     private val _search = MutableStateFlow(ContentState<List<Video>>(value = emptyList()))
     val search = _search.asStateFlow()
+    private val _searchHasMore = MutableStateFlow(false)
+    val searchHasMore = _searchHasMore.asStateFlow()
+    private val _searchLoadingMore = MutableStateFlow(false)
+    val searchLoadingMore = _searchLoadingMore.asStateFlow()
     private val _hotSearch = MutableStateFlow(ContentState<List<HotSearchItem>>(loading = true))
     val hotSearch = _hotSearch.asStateFlow()
     private val _searchHistory = MutableStateFlow(searchPreferences.getString("items", "").orEmpty().split('\u001f').filter(String::isNotBlank))
@@ -63,6 +71,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val upProfile = _upProfile.asStateFlow()
     private val _upVideos = MutableStateFlow(ContentState<List<Video>>())
     val upVideos = _upVideos.asStateFlow()
+    private val _upVideoHasMore = MutableStateFlow(false)
+    val upVideoHasMore = _upVideoHasMore.asStateFlow()
+    private val _upVideoLoadingMore = MutableStateFlow(false)
+    val upVideoLoadingMore = _upVideoLoadingMore.asStateFlow()
     private val _upDynamics = MutableStateFlow(ContentState<List<DynamicVideo>>())
     val upDynamics = _upDynamics.asStateFlow()
     private val _upDynamicHasMore = MutableStateFlow(false)
@@ -93,12 +105,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val related = _related.asStateFlow()
     private val _history = MutableStateFlow(ContentState<List<HistoryItem>>())
     val history = _history.asStateFlow()
+    private val _historyHasMore = MutableStateFlow(false)
+    val historyHasMore = _historyHasMore.asStateFlow()
+    private val _historyLoadingMore = MutableStateFlow(false)
+    val historyLoadingMore = _historyLoadingMore.asStateFlow()
     private val _watchLater = MutableStateFlow(ContentState<List<Video>>())
     val watchLater = _watchLater.asStateFlow()
     private val _favorites = MutableStateFlow(ContentState<List<FavoriteFolder>>())
     val favorites = _favorites.asStateFlow()
     private val _dynamics = MutableStateFlow(ContentState<List<DynamicVideo>>())
     val dynamics = _dynamics.asStateFlow()
+    private val _dynamicsHasMore = MutableStateFlow(false)
+    val dynamicsHasMore = _dynamicsHasMore.asStateFlow()
+    private val _dynamicsLoadingMore = MutableStateFlow(false)
+    val dynamicsLoadingMore = _dynamicsLoadingMore.asStateFlow()
     private val _interaction = MutableStateFlow(ContentState<InteractionState>())
     val interaction = _interaction.asStateFlow()
     private val _replies = MutableStateFlow<Map<Long, ContentState<List<Comment>>>>(emptyMap())
@@ -113,6 +133,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val danmakuPosting = _danmakuPosting.asStateFlow()
     private val _liveRooms = MutableStateFlow(ContentState<List<LiveRoomSummary>>())
     val liveRooms = _liveRooms.asStateFlow()
+    private val _liveRoomsHasMore = MutableStateFlow(false)
+    val liveRoomsHasMore = _liveRoomsHasMore.asStateFlow()
+    private val _liveRoomsLoadingMore = MutableStateFlow(false)
+    val liveRoomsLoadingMore = _liveRoomsLoadingMore.asStateFlow()
     private val _liveDetail = MutableStateFlow(ContentState<LiveRoomDetail>())
     val liveDetail = _liveDetail.asStateFlow()
     private val _livePlay = MutableStateFlow(ContentState<LivePlayInfo>())
@@ -134,6 +158,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var playJob: Job? = null
     private var channelJob: Job? = null
     private var dynamicsJob: Job? = null
+    private var liveRoomsJob: Job? = null
     private var liveJob: Job? = null
     private var relatedJob: Job? = null
     private var commentsJob: Job? = null
@@ -144,6 +169,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var danmakuPostingJob: Job? = null
     private var smsJob: Job? = null
     private var upSpaceJob: Job? = null
+    private var upVideoJob: Job? = null
     private var upDynamicJob: Job? = null
     private var shortJob: Job? = null
     private var followJob: Job? = null
@@ -152,8 +178,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var shortCommentJob: Job? = null
     private var shortCommentPostingJob: Job? = null
     private val replyJobs = mutableMapOf<Long, Job>()
-    private val accountJobs = mutableListOf<Job>()
+    private var historyJob: Job? = null
+    private var watchLaterJob: Job? = null
+    private var favoritesJob: Job? = null
     private var searchRequest = 0
+    private var searchPage = 0
+    private var currentSearchQuery = ""
     private var detailsRequest = 0
     private var playRequest = 0
     private var commentPage = 1
@@ -169,14 +199,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var currentCid = 0L
     private val channelCache = mutableMapOf<Channel, List<Video>>()
     private val channelPages = mutableMapOf<Channel, Int>()
+    private val channelMore = mutableMapOf<Channel, Boolean>()
     private val fallbackAttempts = mutableSetOf<Pair<String, Long>>()
     private var smsCooldownUntilMillis = 0L
     private var dynamicsLoadedAt = 0L
+    private var dynamicsOffset = ""
     private var currentUpMid = 0L
+    private var upVideoPage = 0
     private var upDynamicOffset = ""
     private var shortRequest = 0
     private var blockedShortCommentAid = 0L
     private var shortCommentPage = 0
+    private var liveRoomsPage = 0
+    private var historyCursor = HistoryCursor()
     private val shortCache = object : LinkedHashMap<String, Pair<Video, PlayResult>>(4, .75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<Video, PlayResult>>?) = size > 3
     }
@@ -190,22 +225,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshPopular(force: Boolean = false) {
-        if (_channel.value.live) { refreshLiveRooms(); return }
+        if (_channel.value.live) { refreshLiveRooms(force); return }
         channelJob?.cancel()
         val selected = _channel.value
-        val page = if (force && selected.tid == null) (channelPages[selected] ?: 1) % 5 + 1 else channelPages[selected] ?: 1
+        if (!force && channelCache[selected] != null) return
+        val page = if (force && selected.tid == null) (channelPages[selected] ?: 0) + 1 else 1
         channelJob = viewModelScope.launch {
-        _popular.value = ContentState(value = channelCache[selected], loading = true)
-        try {
-            val result = repository.channel(selected, page)
-            channelCache[selected] = result
-            channelPages[selected] = page
-            if (_channel.value == selected) _popular.value = ContentState(value = result)
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Throwable) {
-            if (_channel.value == selected) _popular.value = ContentState(value = channelCache[selected], error = error.userMessage())
+            _popular.value = ContentState(value = channelCache[selected], loading = true)
+            try {
+                val result = repository.channel(selected, page)
+                if (result.isEmpty()) {
+                    channelMore[selected] = false
+                    if (_channel.value == selected) { _channelHasMore.value = false; _popular.value = ContentState(value = channelCache[selected], error = "暂时没有更多新内容") }
+                    return@launch
+                }
+                channelCache[selected] = result.distinctBy(Video::bvid)
+                channelPages[selected] = page; channelMore[selected] = true
+                if (_channel.value == selected) { _popular.value = ContentState(value = channelCache[selected]); _channelHasMore.value = true }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (_channel.value == selected) _popular.value = ContentState(value = channelCache[selected], error = error.userMessage()) }
         }
+    }
+
+    fun loadMorePopular() {
+        val selected = _channel.value
+        if (selected.live) { loadMoreLiveRooms(); return }
+        if (channelJob?.isActive == true || _channelLoadingMore.value || channelMore[selected] == false) return
+        val page = (channelPages[selected] ?: 0) + 1
+        _channelLoadingMore.value = true
+        channelJob = viewModelScope.launch {
+            try {
+                val incoming = repository.channel(selected, page)
+                if (_channel.value != selected) return@launch
+                val old = channelCache[selected].orEmpty()
+                val merged = (old + incoming).distinctBy(Video::bvid)
+                channelCache[selected] = merged; channelPages[selected] = page
+                channelMore[selected] = incoming.isNotEmpty() && merged.size > old.size
+                _popular.value = ContentState(merged); _channelHasMore.value = channelMore[selected] == true
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (_channel.value == selected) _popular.value = _popular.value.copy(error = error.userMessage()) }
+            finally { _channelLoadingMore.value = false }
         }
     }
 
@@ -213,26 +272,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_channel.value == value) return
         _channel.value = value
         _popular.value = ContentState(value = channelCache[value], loading = !value.live)
-        refreshPopular()
+        _channelHasMore.value = channelMore[value] != false
+        if (value.live) { _liveRooms.value = _liveRooms.value.copy(loading = _liveRooms.value.value == null); if (_liveRooms.value.value == null) refreshLiveRooms() }
+        else refreshPopular()
     }
 
-    fun refreshLiveRooms() {
-        liveJob?.cancel()
-        liveJob = viewModelScope.launch {
+    fun refreshLiveRooms(forceNew: Boolean = false) {
+        liveRoomsJob?.cancel()
+        val page = 1
+        liveRoomsJob = viewModelScope.launch {
             _liveRooms.value = _liveRooms.value.copy(loading = true, error = null)
-            try { _liveRooms.value = ContentState(repository.liveRooms()) }
+            try {
+                val result = repository.liveRooms(page)
+                if (result.isEmpty()) { _liveRoomsHasMore.value = false; _liveRooms.value = _liveRooms.value.copy(loading = false, error = "暂时没有更多新直播"); return@launch }
+                liveRoomsPage = page; _liveRoomsHasMore.value = true; _liveRooms.value = ContentState(result.distinctBy(LiveRoomSummary::roomId))
+            }
             catch (error: CancellationException) { throw error }
             catch (error: Throwable) { _liveRooms.value = _liveRooms.value.copy(loading = false, error = error.userMessage()) }
         }
     }
 
+    fun loadMoreLiveRooms() {
+        if (liveRoomsJob?.isActive == true || _liveRoomsLoadingMore.value || !_liveRoomsHasMore.value) return
+        _liveRoomsLoadingMore.value = true
+        liveRoomsJob = viewModelScope.launch {
+            try {
+                val incoming = repository.liveRooms(liveRoomsPage + 1)
+                val old = _liveRooms.value.value.orEmpty(); val merged = (old + incoming).distinctBy(LiveRoomSummary::roomId)
+                if (incoming.isNotEmpty()) liveRoomsPage++
+                _liveRoomsHasMore.value = incoming.isNotEmpty() && merged.size > old.size; _liveRooms.value = ContentState(merged)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { _liveRooms.value = _liveRooms.value.copy(error = error.userMessage()) }
+            finally { _liveRoomsLoadingMore.value = false }
+        }
+    }
+
     fun loadDynamics(force: Boolean = true) {
         dynamicsJob?.cancel()
+        dynamicsOffset = ""
         dynamicsJob = viewModelScope.launch {
-        _dynamics.value = ContentState(value = _dynamics.value.value, loading = true)
-        try { _dynamics.value = ContentState(repository.dynamics(force)); dynamicsLoadedAt = System.currentTimeMillis() }
-        catch (error: CancellationException) { throw error }
-        catch (error: Throwable) { _dynamics.value = ContentState(value = _dynamics.value.value, error = error.userMessage()) }
+            _dynamics.value = ContentState(value = _dynamics.value.value, loading = true)
+            try {
+                val page = repository.dynamics(forceRefresh = force)
+                _dynamics.value = ContentState(page.items); dynamicsOffset = page.offset; _dynamicsHasMore.value = page.hasMore && page.offset.isNotBlank(); dynamicsLoadedAt = System.currentTimeMillis()
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { _dynamics.value = ContentState(value = _dynamics.value.value, error = error.userMessage()) }
+        }
+    }
+
+    fun loadMoreDynamics() {
+        if (dynamicsJob?.isActive == true || _dynamicsLoadingMore.value || !_dynamicsHasMore.value || dynamicsOffset.isBlank()) return
+        _dynamicsLoadingMore.value = true
+        val offset = dynamicsOffset
+        dynamicsJob = viewModelScope.launch {
+            try {
+                val page = repository.dynamics(offset)
+                val old = _dynamics.value.value.orEmpty(); _dynamics.value = ContentState((old + page.items).distinctBy(DynamicVideo::id))
+                dynamicsOffset = page.offset; _dynamicsHasMore.value = page.hasMore && page.offset.isNotBlank()
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { _dynamics.value = _dynamics.value.copy(error = error.userMessage()) }
+            finally { _dynamicsLoadingMore.value = false }
         }
     }
 
@@ -275,26 +374,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun search(query: String) {
+    fun search(query: String, loadMore: Boolean = false) {
         if (query.isBlank()) return
         val normalized = query.trim()
-        val history = (listOf(normalized) + _searchHistory.value.filterNot { it == normalized }).take(12)
-        _searchHistory.value = history
-        searchPreferences.edit().putString("items", history.joinToString("\u001f")).apply()
+        if (!loadMore) {
+            val history = (listOf(normalized) + _searchHistory.value.filterNot { it == normalized }).take(12)
+            _searchHistory.value = history
+            searchPreferences.edit().putString("items", history.joinToString("\u001f")).apply()
+        }
+        if (loadMore && (searchJob?.isActive == true || _searchLoadingMore.value || !_searchHasMore.value || normalized != currentSearchQuery)) return
         searchJob?.cancel()
         val request = ++searchRequest
+        val page = if (loadMore) searchPage + 1 else 1
+        if (!loadMore) { currentSearchQuery = normalized; searchPage = 0; _searchHasMore.value = true }
+        else _searchLoadingMore.value = true
         searchJob = viewModelScope.launch {
-            _search.value = ContentState(value = _search.value.value, loading = true)
+            _search.value = _search.value.copy(loading = !loadMore, error = null)
             try {
-                val results = repository.search(normalized)
-                if (request == searchRequest) _search.value = ContentState(value = results)
+                val result = repository.search(normalized, page)
+                if (request == searchRequest) {
+                    val old = if (page == 1) emptyList() else _search.value.value.orEmpty()
+                    _search.value = ContentState(value = (old + result.items).distinctBy(Video::bvid))
+                    searchPage = page; _searchHasMore.value = result.hasMore && result.items.isNotEmpty()
+                }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                if (request == searchRequest) _search.value = ContentState(error = error.userMessage())
+                if (request == searchRequest) _search.value = _search.value.copy(loading = false, error = error.userMessage())
+            } finally {
+                if (request == searchRequest) _searchLoadingMore.value = false
             }
         }
     }
+
+    fun loadMoreSearch() { search(currentSearchQuery, loadMore = true) }
 
     fun clearSearchHistory() { _searchHistory.value = emptyList(); searchPreferences.edit().remove("items").apply() }
 
@@ -311,19 +424,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         currentUpMid = mid
         _upProfile.value = ContentState(loading = true); _upVideos.value = ContentState(loading = true)
         loadUpDynamics(mid, reset = true)
+        loadUpVideos(mid, reset = true)
         upSpaceJob = viewModelScope.launch {
-            supervisorScope {
-                launch {
-                    try { val value = repository.upProfile(mid); if (mid == currentUpMid) _upProfile.value = ContentState(value) }
-                    catch (error: CancellationException) { throw error }
-                    catch (error: Throwable) { if (mid == currentUpMid) _upProfile.value = ContentState(error = error.userMessage()) }
-                }
-                launch {
-                    try { val value = repository.upArchives(mid); if (mid == currentUpMid) _upVideos.value = ContentState(value) }
-                    catch (error: CancellationException) { throw error }
-                    catch (error: Throwable) { if (mid == currentUpMid) _upVideos.value = ContentState(error = error.userMessage()) }
-                }
-            }
+            try { val value = repository.upProfile(mid); if (mid == currentUpMid) _upProfile.value = ContentState(value) }
+            catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (mid == currentUpMid) _upProfile.value = ContentState(error = error.userMessage()) }
+        }
+    }
+
+    fun loadUpVideos(mid: Long = currentUpMid, reset: Boolean = false) {
+        if (mid <= 0 || (upVideoJob?.isActive == true && !reset) || (!reset && !_upVideoHasMore.value)) return
+        if (reset) { upVideoJob?.cancel(); upVideoPage = 0; _upVideoHasMore.value = true; _upVideos.value = ContentState(loading = true) }
+        else _upVideoLoadingMore.value = true
+        val page = upVideoPage + 1
+        upVideoJob = viewModelScope.launch {
+            try {
+                val result = repository.upArchives(mid, page)
+                if (mid != currentUpMid) return@launch
+                val old = if (page == 1) emptyList() else _upVideos.value.value.orEmpty()
+                _upVideos.value = ContentState((old + result.items).distinctBy(Video::bvid)); upVideoPage = page
+                _upVideoHasMore.value = result.hasMore && result.items.isNotEmpty()
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (mid == currentUpMid) _upVideos.value = _upVideos.value.copy(loading = false, error = error.userMessage()) }
+            finally { _upVideoLoadingMore.value = false }
         }
     }
 
@@ -705,7 +828,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         try {
             val profile = repository.profile()
             _profile.value = ContentState(value = profile)
-            if (profile.isLogin) loadProfileSections(profile.mid)
+            if (profile.isLogin) loadProfileSections()
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
@@ -714,21 +837,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun loadProfileSections(mid: Long) {
-        fun <T> load(target: MutableStateFlow<ContentState<List<T>>>, block: suspend () -> List<T>) = viewModelScope.launch {
-            target.value = ContentState(loading = true)
-            try { target.value = ContentState(value = block()) }
-            catch (error: CancellationException) { throw error }
-            catch (error: Throwable) { target.value = ContentState(error = error.userMessage()) }
-        }
-        accountJobs += load(_history) { repository.history() }
-        accountJobs += load(_watchLater) { repository.watchLater() }
-        accountJobs += load(_favorites) { repository.favoriteFolders(mid) }
+    private fun loadProfileSections() {
+        refreshHistory()
+        refreshWatchLater()
+        refreshFavorites()
     }
 
     fun refreshFavorites() {
         val mid = _profile.value.value?.takeIf(NavData::isLogin)?.mid ?: return
-        accountJobs += viewModelScope.launch {
+        favoritesJob?.cancel()
+        favoritesJob = viewModelScope.launch {
             _favorites.value = ContentState(value = _favorites.value.value, loading = true)
             try { _favorites.value = ContentState(repository.favoriteFolders(mid)) }
             catch (error: CancellationException) { throw error }
@@ -736,11 +854,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun refreshHistory() = refreshAccount(_history) { repository.history() }
-    fun refreshWatchLater() = refreshAccount(_watchLater) { repository.watchLater() }
-    private fun <T> refreshAccount(target: MutableStateFlow<ContentState<List<T>>>, block: suspend () -> List<T>) {
-        accountJobs.forEach { it.cancel() }; accountJobs.clear()
-        accountJobs += viewModelScope.launch { target.value = target.value.copy(loading = true, error = null); try { target.value = ContentState(block()) } catch (error: CancellationException) { throw error } catch (error: Throwable) { target.value = target.value.copy(loading = false, error = error.userMessage()) } }
+    fun refreshHistory() = loadHistory(reset = true)
+    fun loadMoreHistory() = loadHistory(reset = false)
+
+    private fun loadHistory(reset: Boolean) {
+        if (historyJob?.isActive == true && !reset || !reset && !_historyHasMore.value) return
+        if (reset) { historyJob?.cancel(); historyCursor = HistoryCursor(); _history.value = _history.value.copy(loading = true, error = null) }
+        else _historyLoadingMore.value = true
+        val requestedCursor = if (reset) HistoryCursor() else historyCursor
+        historyJob = viewModelScope.launch {
+            try {
+                val data = repository.history(requestedCursor.max, requestedCursor.view_at, requestedCursor.business)
+                val old = if (reset) emptyList() else _history.value.value.orEmpty()
+                val merged = (old + data.list).distinctBy { it.history.bvid.ifBlank { "${it.title}:${it.progress}" } }
+                _history.value = ContentState(merged)
+                val advanced = data.cursor != requestedCursor && (data.cursor.max > 0 || data.cursor.view_at > 0)
+                historyCursor = data.cursor; _historyHasMore.value = data.list.isNotEmpty() && advanced && merged.size > old.size
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { _history.value = _history.value.copy(loading = false, error = error.userMessage()) }
+            finally { _historyLoadingMore.value = false }
+        }
+    }
+
+    fun refreshWatchLater() {
+        watchLaterJob?.cancel()
+        watchLaterJob = viewModelScope.launch {
+            _watchLater.value = _watchLater.value.copy(loading = true, error = null)
+            try { _watchLater.value = ContentState(repository.watchLater()) }
+            catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { _watchLater.value = _watchLater.value.copy(loading = false, error = error.userMessage()) }
+        }
     }
 
     fun loadFavoriteResources(mediaId: Long, reset: Boolean = false) {
@@ -864,8 +1007,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun logout() {
         cancelDetailJobs()
-        accountJobs.forEach { it.cancel() }; accountJobs.clear()
-        detailsJob?.cancel(); playJob?.cancel(); dynamicsJob?.cancel(); interactionJob?.cancel(); profileJob?.cancel(); upSpaceJob?.cancel(); upDynamicJob?.cancel(); shortJob?.cancel(); followJob?.cancel()
+        detailsJob?.cancel(); playJob?.cancel(); dynamicsJob?.cancel(); interactionJob?.cancel(); profileJob?.cancel(); upSpaceJob?.cancel(); upVideoJob?.cancel(); upDynamicJob?.cancel(); shortJob?.cancel(); followJob?.cancel()
+        historyJob?.cancel(); watchLaterJob?.cancel(); favoritesJob?.cancel()
         detailsRequest++; playRequest++
         favoriteJob?.cancel(); smsJob?.cancel(); favoriteGeneration++
         _history.value = ContentState()

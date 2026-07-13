@@ -9,10 +9,10 @@ data class ApiResponse<T>(val code: Int = -1, val message: String = "", val data
 @Serializable
 data class PopularData(val list: List<Video> = emptyList())
 @Serializable data class RecommendData(val item: List<Video> = emptyList())
-@Serializable data class RankingData(val list: List<Video> = emptyList())
+@Serializable data class RegionData(val archives: List<Video> = emptyList())
 
 @Serializable
-data class SearchData(val result: List<SearchVideo> = emptyList())
+data class SearchData(val result: List<SearchVideo> = emptyList(), val numPages: Int = 0, val page: Int = 1)
 
 @Serializable
 data class SearchVideo(
@@ -150,7 +150,7 @@ sealed interface LoginState {
 @Serializable data class CommentContent(val message: String = "")
 
 @Serializable data class HistoryData(val cursor: HistoryCursor = HistoryCursor(), val list: List<HistoryItem> = emptyList())
-@Serializable data class HistoryCursor(val max: Long = 0, val view_at: Long = 0)
+@Serializable data class HistoryCursor(val max: Long = 0, val view_at: Long = 0, val business: String = "")
 @Serializable data class HistoryItem(
     val title: String = "", val cover: String = "", val author_name: String = "", val progress: Int = 0,
     val duration: Int = 0, val history: HistoryRef = HistoryRef()
@@ -186,6 +186,7 @@ data class PlayResult(
 data class Channel(val title: String, val tid: Int? = null, val popular: Boolean = false, val live: Boolean = false, val short: Boolean = false)
 data class DynamicVideo(val id: String, val video: Video, val text: String = "", val time: String = "", val avatar: String = "", val authorMid: Long = 0)
 data class DynamicPage(val items: List<DynamicVideo>, val offset: String = "", val hasMore: Boolean = false)
+data class VideoPage(val items: List<Video>, val hasMore: Boolean = false)
 data class HotSearchItem(val keyword: String, val displayName: String, val heatScore: Long = 0)
 data class UpProfile(
     val mid: Long, val name: String, val face: String, val sign: String,
